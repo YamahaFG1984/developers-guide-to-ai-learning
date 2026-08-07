@@ -40,3 +40,6 @@ doc_chroma_db
 
 share
 *.arrow
+
+# book PDF (copyrighted, do not redistribute)
+*.pdf
