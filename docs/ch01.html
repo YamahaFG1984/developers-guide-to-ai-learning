@@ -1,0 +1,510 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 1 章 · 理解大语言模型 — AI 开发者指南</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="1">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 1 章 · 概念地基</span>
+<h1>理解大语言模型</h1>
+<p class="lede">
+  本章不写代码，只做一件事：把「LLM 到底是个什么东西」讲清楚。
+  搞懂它怎么被训练、怎么一个字一个字地“写”出答案、以及它在哪些地方靠不住，
+  后面十三章里的每一个技巧，你都能知道它是为了解决什么问题。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>知道 LLM 是怎么训练出来的，训练数据从哪来</li>
+    <li>理解“预测下一个 token”这个核心循环（自回归、推理）</li>
+    <li>分清 AI 的<strong>概率性</strong>和传统程序的<strong>确定性</strong></li>
+    <li>记住 LLM 的四大局限：知识截止、幻觉、偏见、多步推理</li>
+    <li>认识全书路线图：提示工程 → 上下文工程 → 微调 → 自建模型</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="what">LLM 是什么，怎么来的</h2>
+
+<p>
+  <strong>大语言模型（Large Language Model，LLM）</strong>就是一个在海量文本上<strong>预训练</strong>过的超大深度学习模型。
+  训练数据包括网页、书籍、文章、论文、代码，再加上授权的数据源和人工整理过的数据集。
+</p>
+<p>
+  研究者发现了一件神奇的事：只要数据量足够大，模型就会“涌现”出理解语言、积累知识、甚至一定程度推理的能力。
+  没有人专门教它语法或常识 —— 它是从海量例子里自己“悟”出来的。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 250" role="img" aria-label="LLM 的诞生：海量文本经过预训练得到基础模型，再经过指令微调得到能听懂指令的聊天模型">
+  <text class="sm" x="20" y="24">① 原料</text>
+  <rect class="bx" x="20" y="36" width="150" height="30" rx="7"/><text class="lbl" x="95" y="56" text-anchor="middle">网页 · 维基百科</text>
+  <rect class="bx" x="20" y="74" width="150" height="30" rx="7"/><text class="lbl" x="95" y="94" text-anchor="middle">书籍 · 文章</text>
+  <rect class="bx" x="20" y="112" width="150" height="30" rx="7"/><text class="lbl" x="95" y="132" text-anchor="middle">论文 · 代码</text>
+  <rect class="bx" x="20" y="150" width="150" height="30" rx="7"/><text class="lbl" x="95" y="170" text-anchor="middle">授权 / 人工整理数据</text>
+
+  <path class="ln" d="M172 51 L220 100"/><path class="ln" d="M172 89 L220 104"/>
+  <path class="ln" d="M172 127 L220 112"/><path class="ln" d="M172 165 L220 116"/>
+
+  <text class="sm" x="224" y="24">② 预训练</text>
+  <rect class="bx-b" x="222" y="70" width="150" height="76" rx="10"/>
+  <text class="ttl on-b" x="297" y="98" text-anchor="middle">Pretraining</text>
+  <text class="sm" x="297" y="118" text-anchor="middle">反复练习一件事：</text>
+  <text class="sm" x="297" y="134" text-anchor="middle">猜下一个词</text>
+  <path class="ln-b" d="M374 108 H412" marker-end="url(#ar-b)"/>
+
+  <text class="sm" x="416" y="24">③ 基础模型</text>
+  <rect class="bx" x="414" y="78" width="120" height="60" rx="10"/>
+  <text class="ttl" x="474" y="104" text-anchor="middle">Base Model</text>
+  <text class="sm" x="474" y="124" text-anchor="middle">会续写，不会听话</text>
+  <path class="ln-p" d="M536 108 H574" marker-end="url(#ar-p)"/>
+
+  <text class="sm" x="578" y="24">④ 指令微调</text>
+  <rect class="bx-a" x="576" y="70" width="164" height="76" rx="10"/>
+  <text class="ttl on-a" x="658" y="98" text-anchor="middle">Instruct / Chat 模型</text>
+  <text class="sm" x="658" y="118" text-anchor="middle">学会按指令回答、</text>
+  <text class="sm" x="658" y="134" text-anchor="middle">格式规整、有帮助</text>
+
+  <rect class="bx-d" x="222" y="190" width="518" height="44" rx="8"/>
+  <text class="lbl" x="481" y="210" text-anchor="middle">这一步要花几十万到数百万美元的算力 —— 所以我们不自己训练，</text>
+  <text class="lbl" x="481" y="226" text-anchor="middle">而是通过 API / SDK 直接调用别人训练好的模型</text>
+  <path class="ln-d" d="M297 148 V186"/>
+</svg>
+<figcaption>图 1-1　一个 LLM 的诞生：原料 → 预训练 → 基础模型 → 指令微调</figcaption>
+</figure>
+
+<h3>训练数据越来越多</h3>
+
+<p>看看几代模型吃下去的数据量。注意下图是<strong>对数刻度</strong>，每一格是 10 倍：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 210" role="img" aria-label="训练数据规模：BERT 约 33 亿词，GPT-3 约 3000 亿 token，LLaMA 1 约 1.4 万亿 token">
+  <path class="ln-d" d="M200 30 V170"/><path class="ln-d" d="M330 30 V170"/><path class="ln-d" d="M460 30 V170"/><path class="ln-d" d="M590 30 V170"/><path class="ln-d" d="M720 30 V170"/>
+  <text class="sm" x="200" y="190" text-anchor="middle">10 亿</text>
+  <text class="sm" x="330" y="190" text-anchor="middle">100 亿</text>
+  <text class="sm" x="460" y="190" text-anchor="middle">1000 亿</text>
+  <text class="sm" x="590" y="190" text-anchor="middle">1 万亿</text>
+  <text class="sm" x="720" y="190" text-anchor="middle">10 万亿</text>
+
+  <text class="ttl" x="20" y="58">BERT · 2018</text>
+  <rect class="fill-b" x="200" y="42" width="68" height="24" rx="4"/>
+  <text class="lbl" x="278" y="59">≈ 33 亿词</text>
+
+  <text class="ttl" x="20" y="102">GPT-3 · 2020</text>
+  <rect class="fill-p" x="200" y="86" width="322" height="24" rx="4"/>
+  <text class="lbl" x="532" y="103">≈ 3000 亿 token</text>
+
+  <text class="ttl" x="20" y="146">LLaMA 1 · 2023</text>
+  <rect class="fill-a" x="200" y="130" width="409" height="24" rx="4"/>
+  <text class="lbl" x="619" y="147">≈ 1–1.4 万亿 token</text>
+</svg>
+<figcaption>图 1-2　五年里训练数据增长了几百倍。经验法则很直白：数据越多越好</figcaption>
+</figure>
+
+<h3>BERT：让模型学会“看上下文”</h3>
+
+<p>
+  2018 年 Google 的 BERT 是今天 LLM 浪潮的起点之一。在它之前，模型很难理解复杂的句子结构。
+  BERT 的训练方法很像我们小时候做的<strong>完形填空</strong>：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 180" role="img" aria-label="BERT 的掩码训练：遮住句子中的一个词，模型必须同时看左右两边的词来猜">
+  <rect class="bx" x="40"  y="40" width="90" height="40" rx="8"/><text class="mono" x="85"  y="65" text-anchor="middle">The</text>
+  <rect class="bx" x="140" y="40" width="90" height="40" rx="8"/><text class="mono" x="185" y="65" text-anchor="middle">cat</text>
+  <rect class="bx" x="240" y="40" width="90" height="40" rx="8"/><text class="mono" x="285" y="65" text-anchor="middle">sat</text>
+  <rect class="bx-a" x="340" y="40" width="110" height="40" rx="8"/><text class="mono on-a" x="395" y="65" text-anchor="middle">[MASK]</text>
+  <rect class="bx" x="460" y="40" width="90" height="40" rx="8"/><text class="mono" x="505" y="65" text-anchor="middle">the</text>
+  <rect class="bx" x="560" y="40" width="90" height="40" rx="8"/><text class="mono" x="605" y="65" text-anchor="middle">mat</text>
+
+  <path class="ln-b" d="M185 84 C 185 120, 360 120, 380 90" marker-end="url(#ar-b)"/>
+  <path class="ln-b" d="M605 84 C 605 120, 430 120, 410 90" marker-end="url(#ar-b)"/>
+  <text class="lbl on-b" x="200" y="130">← 看左边</text>
+  <text class="lbl on-b" x="540" y="130">看右边 →</text>
+  <text class="ttl on-g" x="395" y="160" text-anchor="middle">模型猜：on ✓</text>
+</svg>
+<figcaption>图 1-3　掩码训练：必须同时看空白<strong>前后</strong>的词才能猜对 —— 这就是 BERT 里 “Bidirectional（双向）” 的意思</figcaption>
+</figure>
+
+<p>除了完形填空，BERT 还练习<strong>判断两个句子是否前后相邻</strong>。这两招让它在问答、摘要上准确率大涨。</p>
+
+<div class="box note">
+  <div class="t">&#9432; 开源（Open Source）≠ 开放权重（Open Weight）</div>
+  <p>
+    本书大量使用 Meta 的 <strong>Llama 3.2</strong>。它常被称为“开源模型”，但更准确的叫法是<strong>开放权重</strong>：
+    训练好的<strong>参数（权重）</strong>公开了，你可以下载运行；但完整源码、训练数据、训练过程并不一定公开，
+    许可证还限制了再分发和部分商业用途。真正的开源软件则是代码可以自由查看、修改、分享。
+  </p>
+</div>
+
+<h2 id="generate">文本是怎么“写”出来的</h2>
+
+<p>
+  这是整本书最重要的一个概念。LLM 生成文本的方式其实非常朴素：
+  <strong>预测下一个最可能出现的词，把它接上，再预测下一个</strong>，如此循环，直到结束。
+  每次预测的单位叫 <strong>token</strong>（第 4 章会细讲 token 和“词”的区别，现在先当成“词”理解就行）。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 330" role="img" aria-label="自回归生成循环：上下文输入模型，模型给出下一个 token 的概率，选出一个 token 追加到上下文，再次循环">
+  <text class="sm" x="20" y="24">上下文（Context）</text>
+  <rect class="bx-b" x="20" y="34" width="440" height="44" rx="8"/>
+  <text class="mono" x="34" y="61">Who are the Beatles? The Beatles are a</text>
+  <rect class="bx-a" x="370" y="42" width="80" height="28" rx="6"/>
+  <text class="mono on-a" x="410" y="61" text-anchor="middle">rock</text>
+
+  <path class="ln" d="M240 80 V112" marker-end="url(#ar)"/>
+  <rect class="bx-p" x="150" y="114" width="180" height="56" rx="10"/>
+  <text class="ttl on-p" x="240" y="138" text-anchor="middle">LLM</text>
+  <text class="sm" x="240" y="157" text-anchor="middle">算出每个候选词的概率</text>
+  <path class="ln" d="M332 142 H392" marker-end="url(#ar)"/>
+
+  <text class="sm" x="400" y="108">下一个 token 的概率分布</text>
+  <text class="mono" x="400" y="138">band</text><rect class="fill-a" x="470" y="126" width="200" height="16" rx="3"/><text class="sm" x="678" y="139">62%</text>
+  <text class="mono" x="400" y="162">group</text><rect class="fill-f" x="470" y="150" width="70" height="16" rx="3"/><text class="sm" x="548" y="163">21%</text>
+  <text class="mono" x="400" y="186">legend</text><rect class="fill-f" x="470" y="174" width="30" height="16" rx="3"/><text class="sm" x="508" y="187">9%</text>
+  <text class="mono" x="400" y="210">…</text><rect class="fill-f" x="470" y="198" width="18" height="16" rx="3"/><text class="sm" x="496" y="211">8%</text>
+
+  <path class="ln-a" d="M680 124 C 740 100, 740 60, 552 56" marker-end="url(#ar-a)"/>
+  <text class="lbl on-a" x="560" y="30">选中 “band”，追加到上下文末尾</text>
+
+  <rect class="bx-d" x="20" y="240" width="720" height="74" rx="10"/>
+  <text class="ttl" x="36" y="264">一轮一轮地重复：</text>
+  <text class="mono" x="36" y="286">Who are the Beatles?  →  The  →  Beatles  →  are a  →  rock  →  band  →  …</text>
+  <text class="sm" x="36" y="305">每一个新 token 都基于它之前的全部 token 生成，这就叫“自回归（auto-regressive）”</text>
+</svg>
+<figcaption>图 1-4　LLM 的核心循环：给上下文 → 算概率 → 选一个 token → 追加 → 再来一次</figcaption>
+</figure>
+
+<div class="terms">
+  <div class="term"><b>Token</b><i>token</i>模型每次预测的最小单位，大致是一个词或半个词。</div>
+  <div class="term"><b>自回归</b><i>auto-regressive</i>一个接一个地生成，后面的词依赖前面所有的词。</div>
+  <div class="term"><b>推理</b><i>inference</i>模型拿到从没见过的输入（你的 prompt）并给出预测的过程。</div>
+  <div class="term"><b>Prompt</b><i>prompt</i>你发给模型的文本，它就是生成开始时的“初始上下文”。</div>
+</div>
+
+<p>
+  推理能力本质上就是<strong>泛化能力</strong>：训练一次，就能对全新的输入做出合理反应。
+  传统编程从来做不到这一点 —— 程序只会做你明确写过的事情。这也是 AI 真正有用的地方。
+</p>
+
+<div class="box tip">
+  <div class="t">&#128161; 不用懂 Transformer 也能用好 LLM</div>
+  <p>
+    就像你不用懂发动机原理也能开车。如果好奇模型内部结构，可以从论文
+    <em>“Attention Is All You Need”</em>（Vaswani 等，2017）开始看。
+  </p>
+</div>
+
+<h2 id="vs">AI 和传统程序有什么不一样</h2>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 250" role="img" aria-label="传统程序：同一个输入永远得到同一个输出；LLM：同一个 prompt 可能得到不同输出">
+  <text class="ttl" x="190" y="26" text-anchor="middle">传统程序：确定性</text>
+  <rect class="bx" x="20" y="90" width="90" height="44" rx="8"/><text class="mono" x="65" y="117" text-anchor="middle">输入 x</text>
+  <path class="ln" d="M112 112 H150" marker-end="url(#ar)"/>
+  <rect class="bx-b" x="152" y="84" width="110" height="56" rx="10"/>
+  <text class="mono on-b" x="207" y="110" text-anchor="middle">if / else</text>
+  <text class="sm" x="207" y="128" text-anchor="middle">布尔逻辑</text>
+  <path class="ln" d="M264 112 H300" marker-end="url(#ar)"/>
+  <rect class="bx-g" x="302" y="90" width="70" height="44" rx="8"/><text class="mono on-g" x="337" y="117" text-anchor="middle">y</text>
+  <text class="sm" x="190" y="180" text-anchor="middle">跑 1 次、100 次、1 万次</text>
+  <text class="sm" x="190" y="198" text-anchor="middle">结果永远都是 y</text>
+
+  <path class="ln-d" d="M395 20 V230"/>
+
+  <text class="ttl" x="575" y="26" text-anchor="middle">LLM：概率性</text>
+  <rect class="bx" x="410" y="90" width="90" height="44" rx="8"/><text class="mono" x="455" y="117" text-anchor="middle">prompt</text>
+  <path class="ln" d="M502 112 H536" marker-end="url(#ar)"/>
+  <rect class="bx-p" x="538" y="84" width="90" height="56" rx="10"/>
+  <text class="ttl on-p" x="583" y="110" text-anchor="middle">LLM</text>
+  <text class="sm" x="583" y="128" text-anchor="middle">统计 / 概率</text>
+  <path class="ln" d="M630 100 L664 62" marker-end="url(#ar)"/>
+  <path class="ln" d="M630 112 H664" marker-end="url(#ar)"/>
+  <path class="ln" d="M630 124 L664 162" marker-end="url(#ar)"/>
+  <rect class="bx-g" x="666" y="44" width="80" height="32" rx="7"/><text class="sm" x="706" y="64" text-anchor="middle">回答 A</text>
+  <rect class="bx-g" x="666" y="96" width="80" height="32" rx="7"/><text class="sm" x="706" y="116" text-anchor="middle">回答 A′</text>
+  <rect class="bx-r" x="666" y="148" width="80" height="32" rx="7"/><text class="sm on-r" x="706" y="168" text-anchor="middle">似是而非</text>
+  <text class="sm" x="575" y="210" text-anchor="middle">同一个 prompt 发两次，结果可能不一样；</text>
+  <text class="sm" x="575" y="228" text-anchor="middle">偶尔还会自信地给出错误答案</text>
+</svg>
+<figcaption>图 1-5　确定性 vs 概率性：这是判断“该不该用 AI”的起点</figcaption>
+</figure>
+
+<div class="tw"><table>
+  <tr><th></th><th>传统编程</th><th>AI 模型</th></tr>
+  <tr><td>基础</td><td>布尔逻辑</td><td>统计 / 概率</td></tr>
+  <tr><td>输出</td><td><strong>确定</strong>：同输入必得同输出</td><td><strong>不确定</strong>：同一 prompt 可能不同</td></tr>
+  <tr><td>灵活性</td><td>只能做你写过的事</td><td>能应对复杂规则和新情况</td></tr>
+  <tr><td>出错方式</td><td>校验失败、抛异常 —— 错得很明显</td><td>给出<strong>看似合理</strong>的错误答案 —— 错得很隐蔽</td></tr>
+</table></div>
+
+<p>所以在决定用 AI 之前，先问自己两个问题：</p>
+<ol>
+  <li>我的业务<strong>能容忍回答有波动</strong>吗？prompt 写得再好，生成依然基于概率。</li>
+  <li>就算测试显示准确率 99.9%（也许比人还准），<strong>剩下 0.1% 出错时会造成什么后果</strong>？怎么兜底？</li>
+</ol>
+
+<div class="box warn">
+  <div class="t">&#9888; 什么时候需要“人在回路”（Human in the Loop）</div>
+  <p>
+    决策越关键，越需要人来核验 AI 的输出。医疗、安全这类生命攸关的系统是最明显的例子：
+    只要有一丝可能导致严重伤害，就几乎必然要让人来做最后的确认。
+  </p>
+</div>
+
+<h2 id="versatile">一个模型，很多用途</h2>
+
+<p>
+  模型从来没有为你的具体需求专门训练过，但它却能帮你写邮件、做翻译、写代码。
+  秘密在于两步训练：<strong>预训练</strong>学会通用的“预测下一个词”，
+  <strong>指令微调（instruction-tuning）</strong>学会听指令、给出有帮助且格式良好的回答。
+  于是只要一个清晰的 prompt，同一个模型就能胜任很多任务，<strong>无需重新训练</strong>：
+</p>
+
+<div class="cards">
+  <div class="card"><span class="ic">&#9997;</span><h4>写作与编辑</h4><p>邮件、草稿、改写润色</p></div>
+  <div class="card"><span class="ic">&#128220;</span><h4>摘要</h4><p>文章、报告、会议记录</p></div>
+  <div class="card"><span class="ic">&#127991;</span><h4>分类与抽取</h4><p>打标签、提取关键字段</p></div>
+  <div class="card"><span class="ic">&#127760;</span><h4>翻译</h4><p>多语言互译</p></div>
+  <div class="card"><span class="ic">&#129504;</span><h4>推理</h4><p>解释步骤、拟定方案</p></div>
+  <div class="card"><span class="ic">&#128187;</span><h4>编码</h4><p>写片段、重构、写测试</p></div>
+</div>
+
+<h2 id="limits">必须正视的四大局限</h2>
+
+<p>
+  AI 研究的终极目标是通用人工智能（AGI），但 <strong>LLM 不是 AGI</strong>，至少现在还不是。
+  别掉进“手里拿着锤子，看什么都像钉子”的陷阱。下面四个局限，决定了本书后面所有技术存在的意义：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 300" role="img" aria-label="LLM 四大局限及对应的解法章节">
+  <rect class="bx-r" x="20" y="20" width="350" height="120" rx="12"/>
+  <text class="ttl on-r" x="40" y="48">① 训练知识有截止</text>
+  <text class="lbl" x="40" y="74">不知道截止日期之后的事，</text>
+  <text class="lbl" x="40" y="94">更不知道你公司的私有数据</text>
+  <text class="sm on-g" x="40" y="124">解法 → 接地（grounding）· RAG（第 8 章）</text>
+
+  <rect class="bx-r" x="390" y="20" width="350" height="120" rx="12"/>
+  <text class="ttl on-r" x="410" y="48">② 幻觉 Hallucination</text>
+  <text class="lbl" x="410" y="74">不会的问题也照样“编”一个答案，</text>
+  <text class="lbl" x="410" y="94">而且语气非常笃定</text>
+  <text class="sm on-g" x="410" y="124">解法 → 提示工程技巧（第 4–6 章）</text>
+
+  <rect class="bx-r" x="20" y="160" width="350" height="120" rx="12"/>
+  <text class="ttl on-r" x="40" y="188">③ 模型偏见 Bias</text>
+  <text class="lbl" x="40" y="214">训练数据里的刻板印象和盲区，</text>
+  <text class="lbl" x="40" y="234">会被模型原样复现</text>
+  <text class="sm on-g" x="40" y="264">解法 → 过滤、调 prompt、微调（第 9–11 章）</text>
+
+  <rect class="bx-r" x="390" y="160" width="350" height="120" rx="12"/>
+  <text class="ttl on-r" x="410" y="188">④ 多步推理弱</text>
+  <text class="lbl" x="410" y="214">没有计划，一步错步步错，</text>
+  <text class="lbl" x="410" y="234">不会主动验算自己的结果</text>
+  <text class="sm on-g" x="410" y="264">解法 → 思维链、提示链（第 5 章）</text>
+</svg>
+<figcaption>图 1-6　四大局限，以及本书中对应的解决办法</figcaption>
+</figure>
+
+<h3>局限 1：训练知识有截止</h3>
+<p>
+  模型的知识被“训练数据截止日期”框死了。问它最新的新闻、你公司内部的产品文档，
+  它要么不知道，要么给出过时、残缺却很自信的答案。
+</p>
+<p>
+  解法很直接：<strong>在推理时把它缺的信息放进 prompt 里</strong>。这叫 <strong>AI grounding（接地）</strong>。
+  比如一个客服机器人，我们把相关的知识库文章一起发给模型：
+</p>
+
+<div class="prompt">
+  <div class="h">接地示例：把知识库文章塞进 prompt</div>
+  <div class="b"><mark>Instruction:</mark> Only use the following articles to answer the question.
+
+<mark>Context:</mark> Knowledge base articles
+  - How to reset your password
+  - Logging in with a password and MFA
+
+<mark>Question:</mark> I'm having password issues. Can you help me log in?</div>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 170" role="img" aria-label="接地：用户问题加上相关资料一起发给 LLM，得到有依据的回答">
+  <rect class="bx" x="20" y="30" width="150" height="44" rx="8"/><text class="lbl" x="95" y="57" text-anchor="middle">用户的问题</text>
+  <rect class="bx-g" x="20" y="96" width="150" height="44" rx="8"/><text class="lbl on-g" x="95" y="123" text-anchor="middle">相关资料（知识库）</text>
+  <path class="ln" d="M172 52 L232 80" marker-end="url(#ar)"/>
+  <path class="ln-g" d="M172 118 L232 92" marker-end="url(#ar-g)"/>
+  <rect class="bx-b" x="236" y="54" width="170" height="64" rx="10"/>
+  <text class="ttl on-b" x="321" y="82" text-anchor="middle">拼成一个 prompt</text>
+  <text class="sm" x="321" y="102" text-anchor="middle">指令 + 资料 + 问题</text>
+  <path class="ln" d="M408 86 H458" marker-end="url(#ar)"/>
+  <rect class="bx-p" x="460" y="60" width="100" height="52" rx="10"/><text class="ttl on-p" x="510" y="91" text-anchor="middle">LLM</text>
+  <path class="ln" d="M562 86 H604" marker-end="url(#ar)"/>
+  <rect class="bx-a" x="606" y="54" width="134" height="64" rx="10"/>
+  <text class="ttl on-a" x="673" y="82" text-anchor="middle">有依据的回答</text>
+  <text class="sm" x="673" y="102" text-anchor="middle">不再凭空猜</text>
+</svg>
+<figcaption>图 1-7　接地（grounding）：模型不知道的，我们在 prompt 里告诉它。第 8 章的 RAG 就是把这件事自动化</figcaption>
+</figure>
+
+<h3>局限 2：幻觉</h3>
+<p>
+  如果模型没学过你问的东西，它<strong>不会说“不知道”</strong>，而是根据见过的模式照样拼出一串 token，
+  语气笃定，甚至编造事实。书里有个很妙的类比：你和人聊天，自以为懂了对方在说什么，
+  自信地发表了一通高见，结果对方看你像看外星人 —— 你把记忆碎片拼成了一个并不适用的答案。
+</p>
+<p>
+  幻觉也来自 LLM 的概率本质：即便是高概率的 token，放在特定语境里也可能是错的。
+  <strong>幻觉永远可能发生</strong>，我们能做的是降低它的概率（第二部分会讲一系列技巧）。
+</p>
+
+<h3>局限 3：模型偏见</h3>
+<p>
+  训练数据本身就带着人类的偏见和盲区。如果数据以英语、某些地区的内容为主，或者重复了刻板印象，
+  模型就会复现这些模式。这不是模型“选择”不公平，而是<strong>它在照搬所见</strong> ——
+  它学的是语言模式，不带道德判断。对策是加过滤、调整 prompt，或者微调模型。
+</p>
+
+<h3>局限 4：多步推理</h3>
+<p>LLM 并不像人那样“思考”，它只是按模式生成下一个可能的词，<strong>没有计划</strong>。于是：</p>
+<ul>
+  <li>会跳步骤、混淆事实，做出“看着对其实错”的自信跳跃</li>
+  <li><strong>误差累积</strong>：第一步错了，后面全部建立在错误之上</li>
+  <li>prompt 越长越糟糕：重要细节被淹没，模型用猜测填空，而不是主动问你</li>
+  <li>没有可靠的自检：不知道自己错了，除非你要求，它不会验算</li>
+  <li>跨轮次没有真正的工作记忆，长任务中上下文会漂移</li>
+</ul>
+
+<h2 id="pyramid">提升效果的四层金字塔</h2>
+
+<p>
+  LLM 本质上是个<strong>黑盒</strong>，我们不知道它到底学过什么。对任何预训练模型，都得<strong>实验</strong>才知道开箱即用够不够。
+  老话依然成立：<em>Garbage in, garbage out</em>。当效果不够好时，按下面的顺序一层层往下走：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 330" role="img" aria-label="四层策略金字塔：提示工程、上下文工程、微调、自建模型，越往下越贵越精确">
+  <polygon class="bx-g" points="380,20 460,90 300,90"/>
+  <text class="ttl on-g" x="380" y="76" text-anchor="middle">提示工程</text>
+  <polygon class="bx-b" points="300,96 460,96 530,166 230,166"/>
+  <text class="ttl on-b" x="380" y="138" text-anchor="middle">上下文工程</text>
+  <polygon class="bx-p" points="230,172 530,172 600,242 160,242"/>
+  <text class="ttl on-p" x="380" y="214" text-anchor="middle">微调 Fine-Tuning</text>
+  <polygon class="bx-d" points="160,248 600,248 650,318 110,318"/>
+  <text class="ttl" x="380" y="290" text-anchor="middle">自建模型 Custom Model</text>
+
+  <text class="sm" x="486" y="60">← 第 4–6 章 · 永远从这里开始</text>
+  <text class="sm" x="548" y="135">← 第 4、8 章</text>
+  <text class="sm" x="616" y="212">← 第 9–11 章</text>
+  <text class="sm" x="600" y="306">本书不涉及</text>
+
+  <path class="ln-a" d="M22 30 V300" marker-end="url(#ar-a)"/>
+  <text class="sm on-a" x="30" y="40">便宜、简单</text>
+  <text class="sm on-a" x="30" y="56">灵活</text>
+  <text class="sm on-a" x="30" y="290">更贵、更耗时</text>
+  <text class="sm on-a" x="30" y="306">更聚焦、更精确</text>
+</svg>
+<figcaption>图 1-8　全书路线图：从金字塔顶开始，效果不够再往下走一层</figcaption>
+</figure>
+
+<div class="cards">
+  <div class="card"><h4>提示工程</h4><p>在 prompt 里给出上下文、指令、示例，让模型理解意图。需要创造力和反复试错。<strong>最便宜，永远先试它。</strong></p></div>
+  <div class="card"><h4>上下文工程</h4><p>提示工程 + 管理上下文的系统组件：只放需要的事实，按清晰顺序排列。聊天机器人和 Agent 尤其重要。</p></div>
+  <div class="card"><h4>微调</h4><p>拿一个已经很强的模型，用你的专业数据继续训练，把它塑造成你需要的样子。</p></div>
+  <div class="card"><h4>自建模型</h4><p>从零训练。我们是“AI 厨师”，用现成的原料做菜；造模型留给“AI 建筑师”。</p></div>
+</div>
+
+<div class="box key">
+  <div class="t">&#128273; 什么是上下文工程？</div>
+  <p>
+    Andrej Karpathy（OpenAI 联合创始人）的说法：人们以为 prompt 就是一段简短的任务描述，
+    但在任何工业级 LLM 应用里，<strong>上下文工程是一门精细的艺术与科学 —— 用恰到好处的信息填满上下文窗口，以支撑下一步</strong>。
+    上下文窗口就是一次能发给模型的最大 prompt 长度（第 4 章详述）。
+  </p>
+</div>
+
+<h2 id="agentic">走向自主系统</h2>
+
+<p>
+  传统软件按固定方式编程，任何新流程都要改代码。
+  <strong>智能体 AI（Agentic AI）</strong>不一样：它能自己做决策、采取行动、调整行为，通过调用工具、API 甚至其他模型来完成复杂任务。
+</p>
+<ul>
+  <li><strong>Agent（智能体）</strong>是最常见的实现模式</li>
+  <li><strong>MCP（Model Context Protocol）</strong>是让工具、API、数据源能被 AI 模型访问的开放标准</li>
+</ul>
+<p>这两个概念会在第五部分（第 12–14 章）展开。</p>
+
+<h2 id="code">把 LLM 接进你的代码</h2>
+
+<p>
+  你每天用的 ChatGPT 其实只是一个<strong>界面</strong>。你发出 prompt 后，它在背后调用 OpenAI 的 API，
+  由真正的 LLM 生成回答。作为开发者，我们要做的就是<strong>跳过界面，直接调 API</strong>：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 210" role="img" aria-label="普通用户通过 ChatGPT 界面使用 LLM；开发者在自己的应用中直接调用 API">
+  <text class="sm" x="20" y="22">普通用户</text>
+  <rect class="bx" x="20" y="32" width="90" height="44" rx="8"/><text class="lbl" x="65" y="59" text-anchor="middle">你</text>
+  <path class="ln" d="M112 54 H160" marker-end="url(#ar)"/>
+  <rect class="bx" x="162" y="32" width="150" height="44" rx="8"/><text class="lbl" x="237" y="59" text-anchor="middle">ChatGPT 界面</text>
+  <path class="ln" d="M314 54 L400 92" marker-end="url(#ar)"/>
+
+  <rect class="bx-b" x="402" y="74" width="140" height="56" rx="10"/>
+  <text class="ttl on-b" x="472" y="99" text-anchor="middle">模型 API</text>
+  <text class="sm" x="472" y="117" text-anchor="middle">HTTP / SDK</text>
+  <path class="ln" d="M544 102 H592" marker-end="url(#ar)"/>
+  <rect class="bx-p" x="594" y="74" width="146" height="56" rx="10"/>
+  <text class="ttl on-p" x="667" y="99" text-anchor="middle">LLM</text>
+  <text class="sm" x="667" y="117" text-anchor="middle">GPT / Llama / Claude…</text>
+
+  <text class="sm" x="20" y="142">开发者（本书）</text>
+  <rect class="bx-a" x="20" y="152" width="90" height="44" rx="8"/><text class="lbl on-a" x="65" y="179" text-anchor="middle">用户</text>
+  <path class="ln-a" d="M112 174 H160" marker-end="url(#ar-a)"/>
+  <rect class="bx-a" x="162" y="152" width="150" height="44" rx="8"/><text class="lbl on-a" x="237" y="179" text-anchor="middle">你写的应用</text>
+  <path class="ln-a" d="M314 174 L400 112" marker-end="url(#ar-a)"/>
+</svg>
+<figcaption>图 1-9　ChatGPT 只是一个界面；本书教你在自己的应用里直接调用模型 API</figcaption>
+</figure>
+
+<p>
+  接下来几章会通过 <strong>Ollama</strong> 在本地运行 Meta 的开放权重模型 <strong>Llama 3.2</strong> —— 在你自己电脑上跑，不花一分钱。
+  同样的代码稍作修改就能换成任何其他模型。<strong>概念不变，测试会告诉你哪个模型更好、更快或更省钱。</strong>
+</p>
+
+<h2 id="summary">小结</h2>
+
+<div class="tw"><table>
+  <tr><th>主题</th><th>要点</th></tr>
+  <tr><td>训练</td><td>海量公开 + 授权文本，成本几十万到数百万美元，所以我们用现成模型</td></tr>
+  <tr><td>生成</td><td>自回归地逐个预测 token；“推理”就是对新输入做预测</td></tr>
+  <tr><td>与传统编程的差别</td><td>概率性 vs 确定性；灵活但会隐蔽地犯错</td></tr>
+  <tr><td>四大局限</td><td>知识截止、幻觉、模型偏见、多步推理弱</td></tr>
+  <tr><td>改进路径</td><td>提示工程 → 上下文工程 → 微调 → 自建模型</td></tr>
+  <tr><td>接入方式</td><td>API 与 SDK（本书用 Ollama + Llama 3.2）</td></tr>
+</table></div>
+
+<div class="exercise">
+  <h3>自测问题</h3>
+  <ol>
+    <li>为什么同一个 prompt 发两次可能得到不同结果？这对你的产品设计意味着什么？</li>
+    <li>“AI grounding” 解决的是哪一类局限？它和第 8 章的 RAG 是什么关系？</li>
+    <li>你的项目该从金字塔的哪一层开始？出现什么信号时，说明该往下走一层了？</li>
+    <li>举一个你工作中的场景，说明为什么它<strong>不适合</strong>用 LLM。</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

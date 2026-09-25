@@ -1,0 +1,638 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 5 章 · 提示工程技巧 — AI 开发者指南</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="5">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 5 章 · 技巧工具箱</span>
+<h1>提示工程技巧</h1>
+<p class="lede">
+  上一章讲了“好 prompt 长什么样”，这一章给你一整套实战技巧：让模型从邮件里抽数据、给聊天记录脱敏、
+  扮演特定角色、照着示例回答、一步步推理，以及把大任务拆成一串小 prompt。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>用<strong>指令提示</strong>做数据抽取、PII 脱敏、合成数据生成</li>
+    <li>用 <strong>persona（角色）</strong>隐式地收窄模型的回答范围</li>
+    <li>掌握 <strong>zero-shot / one-shot / few-shot</strong>，用示例“教”模型</li>
+    <li>理解<strong>思维链（CoT）</strong>为什么有效，以及它的代价</li>
+    <li>学会<strong>提示链（prompt chaining）</strong>和几条实用的最佳实践</li>
+  </ul>
+</div>
+
+<div class="box tip">
+  <div class="t">&#128161; 学习建议</div>
+  <ul>
+    <li><strong>亲手试每个例子</strong>：第 3 章的服务、Ollama 命令行、ChatGPT 都行，还可以把几种技巧组合起来。</li>
+    <li><strong>想想用传统代码怎么做</strong>：当你想象用正则和规则实现同样功能有多痛苦时，就会真正体会到 LLM 的价值。</li>
+  </ul>
+  <p>提示工程仍是一个开放的研究领域，不同模型偏好的写法可能不同。下面是作者在实践中最有用的一批。</p>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="instruction">指令提示：三个实用场景</h2>
+
+<p>
+  LLM 的好坏取决于你给它的指令。指令写对了，它能做数据抽取、PII 脱敏、文本分类……
+  <strong>不需要庞大的标注数据集，也不需要写在代码里一碰就碎的规则。</strong>
+</p>
+
+<h3>场景 1：从非结构化文本里抽数据</h3>
+
+<p>
+  据估计，企业里 <strong>80–90% 的数据是非结构化的</strong>：邮件、PDF、Word、聊天记录……
+  正则表达式在格式一变时就会失效，而 LLM 能理解文字的<strong>含义</strong>：
+  它知道 “Sarah Whitfield, Director of Customer Experience” 里既有姓名又有职位，
+  知道 “$1,565 due by 12/1/2025” 里有金额和日期 —— 即使这些字段没有任何标签。
+</p>
+
+<div class="prompt">
+  <div class="h">Prompt · Llama 3.2 3B</div>
+  <div class="b">Given the following email:
+
+Hi Jacob,
+Thank you for sending over the detailed proposal. I've reviewed it with our product and customer success leads, and we're excited about the project.
+Please put together an SOW for review so we can get things started. We'd like you to travel to our office in Denver, Colorado, for the kick off meeting.
+Thanks again for the thorough proposal. I'm looking forward to collaborating.
+
+Best regards,
+Sarah Whitfield
+Director of Customer Experience
+Acme Software Solutions
+sarah.whitfield@acmesoft.com · (312) 555-0182
+
+<mark>Extract the sender's name, location, and job_title, company, email, and phone_number. Provide the results back in JSON format where each data element is an attribute. Only return the JSON in your response.</mark></div>
+  <div class="b out">{"sender_name": "Sarah Whitfield", "location": "Denver, Colorado", "job_title": "Director of Customer Experience", "company": "Acme Software Solutions", "email": "sarah.whitfield@acmesoft.com", "phone_number": "(312) 555-0182"}</div>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 270" role="img" aria-label="从邮件中抽取字段：签名档里的信息直接对应到 JSON 字段，location 则是模型从正文推断出来的">
+  <rect class="bx" x="20" y="20" width="300" height="230" rx="10"/>
+  <text class="sm" x="34" y="42">邮件原文（非结构化）</text>
+  <text class="sm" x="34" y="66">…travel to our office in</text>
+  <rect class="bx-r" x="30" y="72" width="130" height="22" rx="4"/>
+  <text class="sm on-r" x="36" y="88">Denver, Colorado</text>
+  <text class="sm" x="34" y="116">Best regards,</text>
+  <text class="lbl" x="34" y="140">Sarah Whitfield</text>
+  <text class="lbl" x="34" y="162">Director of Customer Experience</text>
+  <text class="lbl" x="34" y="184">Acme Software Solutions</text>
+  <text class="sm" x="34" y="206">sarah.whitfield@acmesoft.com</text>
+  <text class="sm" x="34" y="228">(312) 555-0182</text>
+
+  <rect class="bx-g" x="440" y="20" width="300" height="230" rx="10"/>
+  <text class="sm" x="454" y="42">JSON（结构化）</text>
+  <text class="mono" x="454" y="84">"location":</text>
+  <text class="mono" x="454" y="140">"sender_name":</text>
+  <text class="mono" x="454" y="162">"job_title":</text>
+  <text class="mono" x="454" y="184">"company":</text>
+  <text class="mono" x="454" y="206">"email":</text>
+  <text class="mono" x="454" y="228">"phone_number":</text>
+
+  <path class="ln-r" d="M162 83 C 300 83, 330 80, 450 80" marker-end="url(#ar-r)"/>
+  <path class="ln-g" d="M150 136 H450" marker-end="url(#ar-g)"/>
+  <path class="ln-g" d="M270 158 H450" marker-end="url(#ar-g)"/>
+  <path class="ln-g" d="M220 180 H450" marker-end="url(#ar-g)"/>
+  <path class="ln-g" d="M240 202 H450" marker-end="url(#ar-g)"/>
+  <path class="ln-g" d="M150 224 H450" marker-end="url(#ar-g)"/>
+  <text class="sm on-r" x="380" y="104" text-anchor="middle">⚠ 推断出来的</text>
+  <text class="sm on-g" x="345" y="118" text-anchor="middle">签名档里直接写着的</text>
+</svg>
+<figcaption>图 5-1　大部分字段来自签名档；但 location 是模型从正文“推断”的 —— Sarah 从没说过自己在哪</figcaption>
+</figure>
+
+<ul>
+  <li>模型只凭最少的指令就提取出了联系方式。</li>
+  <li>它<strong>照搬了你的命名风格</strong>：prompt 里写 <code>job_title</code>、<code>phone_number</code> 用了下划线，输出也用下划线。</li>
+</ul>
+
+<div class="box warn">
+  <div class="t">&#9888; 两个隐患</div>
+  <ul>
+    <li><strong>模型在做假设</strong>：Sarah 只说“来我们 Denver 的办公室”，并没说自己在那。根据用例，你可能需要更具体的指令、字段说明或示例。</li>
+    <li><strong>格式没有保证</strong>：自己偶尔用用没问题，但代码需要每次都一致的 JSON。第 6 章的<strong>结构化输出</strong>会解决这个问题。</li>
+  </ul>
+</div>
+
+<h3>场景 2：PII 脱敏</h3>
+
+<p>
+  保护个人身份信息（PII）往往是法律要求。正则能去掉已知格式（如身份证号），但常常漏掉边缘情况和格式变体。
+  LLM 能凭语义理解，识别出正则认不出的“换了种说法的 PII”。
+</p>
+
+<div class="box warn">
+  <div class="t">&#9888; 先想清楚数据去了哪</div>
+  <p>
+    把含敏感信息的 prompt 发给 LLM 之前，先搞清楚数据的生命周期：用<strong>托管 API</strong>，要确认服务商怎么保护你的数据、
+    <strong>会不会拿你的 prompt 去训练模型</strong>；用<strong>自托管模型</strong>，要确保自己没有把 prompt 记到日志里。
+  </p>
+</div>
+
+<div class="prompt">
+  <div class="h">Prompt</div>
+  <div class="b">Given the following customer chat, redact any personally identifiable information (PII) and replace it with a placeholder (<mark>for example, [name]</mark>). Redact the following data: name, phone number, email, and address.
+
+<mark>&lt;chat&gt;</mark>
+Agent: Hi Jacob, welcome to Customer First Bank. How can I help you today?
+Customer: I need to order new checks.
+Agent: Sure, I can help you with that. Can you verify a few things for me? I need your phone number and your address.
+Customer: Sure. My phone number is 214-555-1234 and my address is 1234 Fake St, Dallas, TX 75002.
+Agent: Perfect. I've ordered you a new set of checks that will be shipped to your address. You will receive a confirmation email at: jacob.orshalick@email.com.
+Customer: Thanks!
+<mark>&lt;/chat&gt;</mark>
+
+Only return the &lt;chat&gt; content with the PII redacted.</div>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 180" role="img" aria-label="脱敏前后对比：姓名、电话、地址、邮箱被替换成占位符">
+  <text class="ttl" x="180" y="22" text-anchor="middle">脱敏前</text>
+  <rect class="bx" x="20" y="34" width="320" height="130" rx="10"/>
+  <text class="sm" x="32" y="58">Agent: Hi</text><rect class="bx-r" x="92" y="45" width="44" height="18" rx="3"/><text class="sm on-r" x="97" y="58">Jacob</text>
+  <text class="sm" x="32" y="86">My phone number is</text><rect class="bx-r" x="146" y="73" width="90" height="18" rx="3"/><text class="sm on-r" x="151" y="86">214-555-1234</text>
+  <text class="sm" x="32" y="114">my address is</text><rect class="bx-r" x="116" y="101" width="210" height="18" rx="3"/><text class="sm on-r" x="121" y="114">1234 Fake St, Dallas, TX 75002</text>
+  <text class="sm" x="32" y="142">email at:</text><rect class="bx-r" x="90" y="129" width="190" height="18" rx="3"/><text class="sm on-r" x="95" y="142">jacob.orshalick@email.com</text>
+
+  <path class="ln-a" d="M348 99 H410" marker-end="url(#ar-a)"/>
+  <text class="sm on-a" x="379" y="90" text-anchor="middle">LLM</text>
+
+  <text class="ttl" x="580" y="22" text-anchor="middle">脱敏后</text>
+  <rect class="bx-g" x="420" y="34" width="320" height="130" rx="10"/>
+  <text class="sm" x="432" y="58">Agent: Hi</text><rect class="bx-a" x="492" y="45" width="50" height="18" rx="3"/><text class="sm on-a" x="497" y="58">[name]</text>
+  <text class="sm" x="432" y="86">My phone number is</text><rect class="bx-a" x="546" y="73" width="104" height="18" rx="3"/><text class="sm on-a" x="551" y="86">[phone number]</text>
+  <text class="sm" x="432" y="114">my address is</text><rect class="bx-a" x="516" y="101" width="72" height="18" rx="3"/><text class="sm on-a" x="521" y="114">[address]</text>
+  <text class="sm" x="432" y="142">email at:</text><rect class="bx-a" x="490" y="129" width="56" height="18" rx="3"/><text class="sm on-a" x="495" y="142">[email]</text>
+</svg>
+<figcaption>图 5-2　只给了一个 [name] 示例，模型就推断出了其余占位符的格式</figcaption>
+</figure>
+
+<p>这里用了两个小技巧：</p>
+<ol>
+  <li><strong>一个示例胜过千言</strong>：只写了 <code>[name]</code>，模型就明白了 <code>[phone number]</code>、<code>[email]</code> 该怎么写。</li>
+  <li><strong>分隔符</strong>：用 XML 标签 <code>&lt;chat&gt;…&lt;/chat&gt;</code> 标出聊天内容的起止，让模型不会把聊天当成指令。</li>
+</ol>
+
+<h3>场景 3：生成合成数据</h3>
+
+<p>
+  开发、测试、演示、压测、复现 bug……很多时候你需要“看起来真实但不是真的”的数据。LLM 很擅长生成 JSON、CSV、SQL INSERT 等格式的合成数据，
+  而且<strong>不用碰生产数据</strong>。下面这个 prompt 生成了第 7 章要用的商品数据：
+</p>
+
+<div class="prompt">
+  <div class="h">Prompt · 生成 30 条商品 CSV</div>
+  <div class="b">Generate a CSV file containing 30 rows of random product data. The CSV should have the following headers and columns, in this exact order:
+- product_id
+- title
+- category
+- description
+- price
+
+The first row must be the header. Each subsequent row should represent a unique product with a random but plausible value for each column:
+- product_id: A unique alphanumeric code (for example, E001 A002, etc).
+- title: A realistic product name.
+- category: Either "Electronics" or "Apparel".
+- description: A detailed, natural-sounding product description (2-5 sentences).
+- price: A realistic price as a decimal (for example, 199.99).
+
+The total number of rows (including the header) should be 31. Do not repeat any product_id. The output should be valid CSV format, with all fields properly quoted if necessary.
+
+Example header:
+product_id,title,category,description,price
+
+Begin generating the CSV below this line:</div>
+</div>
+
+<div class="box note">
+  <div class="t">&#9432; 用 AI 编程助手效果更好</div>
+  <p>
+    作者是在 Cursor（Agent 模式）里跑的这个 prompt。好处是它能直接把 <code>products.csv</code> 写进你的项目，
+    你还可以接着让它写读取这份数据的代码。成品见 <code>part3/vector_databases/products.csv</code>。
+  </p>
+</div>
+
+<h2 id="persona">角色提示（Persona）</h2>
+
+<p>
+  <strong>Persona</strong> 就是给 LLM 一个身份，让它以那个人的视角回答。来做个实验：
+  问 “Can you tell me how to authenticate to Gmail?”，“authenticate（认证）”这个词在不同场景下意思完全不同。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 260" role="img" aria-label="同一个问题，给模型不同的角色，它对问题的理解和回答方向完全不同">
+  <rect class="bx" x="250" y="14" width="260" height="46" rx="10"/>
+  <text class="mono" x="380" y="42" text-anchor="middle">How to authenticate to Gmail?</text>
+  <path class="ln" d="M330 62 L180 102" marker-end="url(#ar)"/>
+  <path class="ln" d="M430 62 L580 102" marker-end="url(#ar)"/>
+
+  <rect class="bx-b" x="20" y="104" width="330" height="140" rx="12"/>
+  <text class="ttl on-b" x="36" y="130">&#128187; You are a software developer.</text>
+  <text class="lbl" x="36" y="158">理解为：程序怎么访问 Gmail API</text>
+  <text class="sm" x="36" y="182">→ 用 OAuth 2.0</text>
+  <text class="sm" x="36" y="202">→ 在 Google Cloud Console 注册 client ID</text>
+  <text class="sm" x="36" y="222">→ 安装 Google API 客户端库…</text>
+
+  <rect class="bx-g" x="410" y="104" width="330" height="140" rx="12"/>
+  <text class="ttl on-g" x="426" y="130">&#127911; You are a Google help desk rep.</text>
+  <text class="lbl" x="426" y="158">理解为：用户登录不上 Gmail 网站</text>
+  <text class="sm" x="426" y="182">→ 打开浏览器进入登录页</text>
+  <text class="sm" x="426" y="202">→ 输入邮箱和密码，点 Next</text>
+  <text class="sm" x="426" y="222">→ 语气亲切：“很乐意帮您！”</text>
+</svg>
+<figcaption>图 5-3　一句 persona，就给了模型一整套隐含的背景和语气</figcaption>
+</figure>
+
+<p>Persona 利用了模型的预训练，相当于一次性给了它<strong>一大堆隐式指令</strong>：</p>
+
+<div class="cards">
+  <div class="card"><h4>更紧的任务框定</h4><p>少写很多显式指令，prompt 更简单。</p></div>
+  <div class="card"><h4>更低的成本</h4><p>prompt 越短，计费的 token 越少。</p></div>
+  <div class="card"><h4>一致的语气</h4><p>长对话里风格保持统一。</p></div>
+  <div class="card"><h4>更安全</h4><p>专业身份帮助限定话题范围（第 6 章护栏）。</p></div>
+</div>
+
+<p>角色可以非常具体，例如：<em>“You are an accounting software integration engineer with extensive experience integrating QuickBooks APIs.”</em></p>
+
+<div class="box warn">
+  <div class="t">&#9888; 慎用医生、律师、理财顾问这类角色</div>
+  <p>它们暗示了受监管领域的专业资质。如果用户把模型的回答当成专业建议，可能引发法律或伦理问题。务必明确说明 AI 不是持证专家，回答仅供参考。</p>
+</div>
+
+<h2 id="shots">Zero-shot、One-shot、Few-shot</h2>
+
+<p>
+  通过示例来教，是一种<strong>上下文内学习（in-context learning）</strong>。LLM 天生就是好学生：
+</p>
+
+<div class="terms">
+  <div class="term"><b>Zero-shot 零样本</b>只给指令，完全靠模型的预训练。</div>
+  <div class="term"><b>One-shot 单样本</b>给<strong>一个</strong>示例，示范怎么回答。</div>
+  <div class="term"><b>Few-shot 少样本</b>给<strong>多个</strong>示例，覆盖各种情况。</div>
+</div>
+
+<p>
+  回到第 4 章的情感分析。零样本时，模型可能回答 <code>Sentiment: Positive</code>、<code>Positive</code> 或
+  <code>The statement is positive</code> —— 技术上都对，但你的代码没法稳定解析。加上几个示例看看：
+</p>
+
+<div class="prompt">
+  <div class="h">Few-shot Prompt</div>
+  <div class="b">&lt;instructions&gt;
+You are an expert on sentiment analysis. You will analyze a statement and respond with the sentiment as positive, negative, or neutral.
+&lt;/instructions&gt;
+
+&lt;examples&gt;
+User: Thank you @AcmeCorp! This new shampoo has been great!
+Assistant: <mark>positive</mark>
+
+User: My order from @AcmeCorp never arrived and customer service wasn't helpful.
+Assistant: <mark>negative</mark>
+
+User: I wouldn't trust @AcmeCorp.
+Assistant: <mark>negative</mark>
+&lt;/examples&gt;
+
+User: I'm an @AcmeCorp repeat customer. They ship fast and prices are great.
+Assistant:</div>
+  <div class="b out">positive</div>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 210" role="img" aria-label="示例越多，模型输出的格式越统一">
+  <rect class="bx" x="20" y="30" width="220" height="140" rx="10"/>
+  <text class="ttl" x="130" y="54" text-anchor="middle">Zero-shot</text>
+  <text class="sm" x="130" y="74" text-anchor="middle">没有示例</text>
+  <text class="mono" x="36" y="104">Sentiment: Positive</text>
+  <text class="mono" x="36" y="126">Positive</text>
+  <text class="mono" x="36" y="148">The statement is…</text>
+
+  <path class="ln" d="M242 100 H278" marker-end="url(#ar)"/>
+  <rect class="bx-b" x="280" y="30" width="200" height="140" rx="10"/>
+  <text class="ttl on-b" x="380" y="54" text-anchor="middle">One-shot</text>
+  <text class="sm" x="380" y="74" text-anchor="middle">1 个示例</text>
+  <text class="mono" x="296" y="110">positive</text>
+  <text class="mono" x="296" y="136">Positive.</text>
+
+  <path class="ln" d="M482 100 H518" marker-end="url(#ar)"/>
+  <rect class="bx-g" x="520" y="30" width="220" height="140" rx="10"/>
+  <text class="ttl on-g" x="630" y="54" text-anchor="middle">Few-shot</text>
+  <text class="sm" x="630" y="74" text-anchor="middle">3 个示例</text>
+  <text class="mono on-g" x="630" y="118" text-anchor="middle">positive</text>
+
+  <path class="ln-a" d="M20 196 H740" marker-end="url(#ar-a)"/>
+  <text class="sm on-a" x="380" y="190" text-anchor="middle">示例越多、越多样 → 输出格式越稳定（但仍不是 100% 保证）</text>
+</svg>
+<figcaption>图 5-4　示例的作用：告诉模型<strong>你想要什么形式</strong>的回答（示意）</figcaption>
+</figure>
+
+<p>
+  注意示例里用了通用的角色名 <strong>User</strong> 和 <strong>Assistant</strong> —— 下一章你会看到，从代码调 API 时，角色是一等公民。
+  用预训练模型做分类时，准确性取决于两点：<strong>模型怎么训练的</strong>，以及<strong>示例的数量和多样性</strong>。
+  这里模型本来就懂“情感”，示例只是在规定输出形式。
+</p>
+
+<h3>进阶：分类到“模型不知道”的类别</h3>
+
+<p>
+  假设要把社媒评论路由到对应部门，自动开工单。<strong>公司有哪些部门是内部知识，模型从没学过。</strong>
+  没关系 —— 这仍然是分类问题，在 prompt 里给出<strong>标签清单 + 每个标签的说明 + 示例</strong>就行：
+</p>
+
+<div class="prompt">
+  <div class="h">Few-shot Prompt · 情感 + 部门路由</div>
+  <div class="b">&lt;instructions&gt;
+<mark>You are an online customer feedback expert.</mark>
+Analyze the provided statement carefully and respond with the sentiment as positive, negative, or neutral.
+Specify the department the statement should be routed to:
+
+<mark>- customer_support: issues with customer support not being helpful
+- online_ordering: issues with ordering, website speed, or checkout process
+- product_quality: issues with product quality or description
+- shipping_and_delivery: issues with slow shipping or not receiving an order
+- other_off_topic: a department could not be identified</mark>
+
+Only respond with JSON that includes the sentiment and the department based on the &lt;examples&gt; provided.
+&lt;/instructions&gt;
+
+&lt;examples&gt;
+User: Thank you @AcmeCorp! This new shampoo has been great!
+Assistant: {"sentiment"="positive","department"="product_quality"}
+
+User: My order from @AcmeCorp never arrived and customer service wasn't helpful.
+Assistant: {"sentiment"="negative","department"="customer_support"}
+
+User: I wouldn't trust @AcmeCorp.
+Assistant: {"sentiment"="negative","department"="other_off_topic"}
+
+User: I'm an @AcmeCorp repeat customer. They ship fast and prices are great.
+Assistant: {"sentiment"="positive","department"="shipping_and_delivery"}
+
+User: The @AcmeCorp website is so slow. Every time I've tried to order I can't even get through checkout.
+Assistant: {"sentiment"="negative","department"="online_ordering"}
+&lt;/examples&gt;
+
+User: Don't trust @AcmeCorp. It's been weeks and my order was never even shipped!
+Assistant:</div>
+  <div class="b out">{"sentiment": "negative", "department": "shipping_and_delivery"}</div>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 170" role="img" aria-label="部门路由 prompt 的四层结构：角色、任务、标签定义、示例">
+  <rect class="bx-a" x="20"  y="40" width="170" height="80" rx="10"/><text class="ttl on-a" x="105" y="70" text-anchor="middle">① 角色</text><text class="sm" x="105" y="94" text-anchor="middle">客户反馈专家</text>
+  <rect class="bx-b" x="200" y="40" width="170" height="80" rx="10"/><text class="ttl on-b" x="285" y="70" text-anchor="middle">② 任务</text><text class="sm" x="285" y="94" text-anchor="middle">情感 + 部门</text>
+  <rect class="bx-g" x="380" y="40" width="170" height="80" rx="10"/><text class="ttl on-g" x="465" y="70" text-anchor="middle">③ 标签定义</text><text class="sm" x="465" y="94" text-anchor="middle">5 个部门 + 各管什么</text>
+  <rect class="bx-p" x="560" y="40" width="180" height="80" rx="10"/><text class="ttl on-p" x="650" y="70" text-anchor="middle">④ 示例</text><text class="sm" x="650" y="94" text-anchor="middle">输入 → 期望的 JSON</text>
+  <text class="sm" x="380" y="150" text-anchor="middle">模型没学过你的部门？用 ③ 告诉它，用 ④ 示范给它看</text>
+</svg>
+<figcaption>图 5-5　教模型认识“内部知识”类标签的 prompt 结构</figcaption>
+</figure>
+
+<div class="box note">
+  <div class="t">&#9432; 什么时候该微调？</div>
+  <p>
+    如果模型对某类标签非常陌生，可能要给<strong>多到上下文窗口都塞不下</strong>的示例才能教会它。这时微调才划算 ——
+    第四部分会看一个给邮件打自定义标签的例子。另外，即使示例再多，JSON 格式也仍不能保证，要靠第 6 章的结构化输出。
+  </p>
+</div>
+
+<div class="box key">
+  <div class="t">&#128273; 分隔符（Delimiters）</div>
+  <p>
+    上面用 XML 标签把 <code>&lt;instructions&gt;</code> 和 <code>&lt;examples&gt;</code> 包了起来。
+    分隔符帮模型分清“哪部分是指令、哪部分是资料、哪部分是示例”。没有统一标准，<strong>XML 标签、引号、Markdown 标题</strong>都好用，
+    用你的模型和内容实验一下。
+  </p>
+</div>
+
+<h2 id="cot">思维链（Chain-of-Thought）</h2>
+
+<p>
+  你有没有发现，LLM 有时能解出很难的题，却数不清 “strawberry” 里有几个 r？
+  因为 LLM 并不会像人一样自动把问题拆成步骤。<strong>它默认会根据见过的模式直接“跳”到最终答案。</strong>
+</p>
+<p>
+  <strong>思维链（CoT）</strong>就是鼓励模型一步步来，像编程面试时在白板上边写边讲。触发它很简单：
+</p>
+<ol>
+  <li>直接告诉它：<strong>“Think step-by-step.”</strong></li>
+  <li>或者在示例里展示多步推理的过程。</li>
+</ol>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 270" role="img" aria-label="直接回答时模型一步跳到答案；思维链让模型先写出中间步骤，这些步骤被喂回上下文，帮助得出正确答案">
+  <text class="ttl on-r" x="20" y="26">直接回答</text>
+  <rect class="bx" x="20" y="38" width="230" height="40" rx="8"/><text class="sm" x="135" y="62" text-anchor="middle">strawberry 里有几个 r？</text>
+  <path class="ln-r" d="M252 58 H330" marker-end="url(#ar-r)"/>
+  <text class="sm on-r" x="291" y="50" text-anchor="middle">凭感觉跳</text>
+  <rect class="bx-r" x="332" y="38" width="100" height="40" rx="8"/><text class="ttl on-r" x="382" y="63" text-anchor="middle">2 ✗</text>
+
+  <text class="ttl on-g" x="20" y="120">思维链</text>
+  <rect class="bx" x="20" y="132" width="230" height="40" rx="8"/><text class="sm" x="135" y="150" text-anchor="middle">strawberry 里有几个 r？</text><text class="sm on-g" x="135" y="166" text-anchor="middle">Think step-by-step.</text>
+  <path class="ln" d="M252 152 H290" marker-end="url(#ar)"/>
+  <rect class="bx-g" x="292" y="112" width="100" height="30" rx="6"/><text class="sm" x="342" y="132" text-anchor="middle">拆成字母</text>
+  <rect class="bx-g" x="400" y="112" width="120" height="30" rx="6"/><text class="sm" x="460" y="132" text-anchor="middle">s-t-r-a-w-b-e-r-r-y</text>
+  <rect class="bx-g" x="528" y="112" width="100" height="30" rx="6"/><text class="sm" x="578" y="132" text-anchor="middle">第3、8、9位</text>
+  <rect class="bx-a" x="636" y="112" width="104" height="30" rx="6"/><text class="ttl on-a" x="688" y="132" text-anchor="middle">3 ✓</text>
+  <path class="ln" d="M392 127 H398"/><path class="ln" d="M520 127 H526"/><path class="ln" d="M628 127 H634"/>
+
+  <path class="ln-p" d="M350 144 C 360 184, 440 184, 452 147" marker-end="url(#ar-p)"/>
+  <path class="ln-p" d="M468 144 C 480 184, 560 184, 572 147" marker-end="url(#ar-p)"/>
+  <path class="ln-p" d="M586 144 C 598 184, 670 184, 682 147" marker-end="url(#ar-p)"/>
+  <text class="sm on-p" x="510" y="236" text-anchor="middle">每一步写出的 token 都会被喂回上下文，成为下一步的依据</text>
+  <text class="sm" x="510" y="256" text-anchor="middle">—— 模型在回答之前，先向自己“解释”了该怎么解</text>
+</svg>
+<figcaption>图 5-6　思维链为什么有效：生成的中间步骤变成了后续预测的上下文</figcaption>
+</figure>
+
+<div class="box key">
+  <div class="t">&#128273; 为什么有效？</div>
+  <p>
+    回忆第 1 章：模型生成的每个 token 都会被追加到上下文，用于下一次预测。
+    所以让模型先写出推理步骤，<strong>相当于它先向自己解释了问题该怎么解，再给出答案</strong>。
+    这也是 <strong>Agent 里最常用的提示技巧之一</strong> —— 它帮模型推理出完成目标需要哪些步骤（第五部分）。
+  </p>
+</div>
+
+<h3>代价与替代方案</h3>
+
+<div class="tw"><table>
+  <tr><th>考量</th><th>说明</th></tr>
+  <tr><td>推理有成本</td><td>更多 token = 更慢 + 更贵</td></tr>
+  <tr><td>模型推理能力各不相同</td><td>同样的写法，不同模型效果可能差很多</td></tr>
+  <tr><td>“大声思考”有风险</td><td>推理过程可能泄露敏感数据、内部假设或偏见</td></tr>
+</table></div>
+
+<p>
+  <strong>推理模型</strong>（如 GPT-5 家族）即使不专门提示也会“思考”：回答前先生成<strong>推理 token</strong>，
+  你甚至能展开它的“草稿纸”看它怎么得出结论 —— 验证回答时很有用。但这些 token 同样要计费、同样拖慢响应。
+</p>
+
+<p>
+  <strong>草稿链（Chain of Draft，CoD）</strong>是 CoT 的精简版：让模型每一步只写最核心的几个词。
+</p>
+
+<div class="prompt">
+  <div class="h">CoD 指令</div>
+  <div class="b">Think step-by-step but keep only a minimal draft for each step, with five words at most.</div>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 150" role="img" aria-label="token 用量对比：直接回答最少，草稿链中等，思维链最多">
+  <text class="ttl" x="20" y="36">直接回答</text>
+  <rect class="fill-f" x="160" y="22" width="40" height="20" rx="3"/><text class="sm" x="208" y="37">最少 token，推理题容易错</text>
+  <text class="ttl" x="20" y="76">草稿链 CoD</text>
+  <rect class="fill-g" x="160" y="62" width="150" height="20" rx="3"/><text class="sm" x="318" y="77">每步 ≤ 5 个词，效果接近 CoT</text>
+  <text class="ttl" x="20" y="116">思维链 CoT</text>
+  <rect class="fill-a" x="160" y="102" width="480" height="20" rx="3"/><text class="sm" x="648" y="117">最透明，最贵</text>
+</svg>
+<figcaption>图 5-7　CoD 用更少的 token 换来接近 CoT 的效果，但在高强度推理任务上可能不够</figcaption>
+</figure>
+
+<div class="box warn">
+  <div class="t">&#9888; 生产环境：考虑隐藏思维链</div>
+  <p>
+    让模型把推理过程直接展示给用户，可能意外泄露敏感信息或内部假设。
+    很多系统使用<strong>隐藏思维链（hidden CoT）</strong>：模型在内部推理，只把最终答案返回给用户。
+  </p>
+</div>
+
+<h2 id="chain">提示链（Prompt Chaining）</h2>
+
+<p>
+  与其写一个什么都要做的巨型 prompt，不如<strong>把任务拆成一串小步骤</strong>，每一步一个聚焦的 prompt，
+  上一步的输出作为下一步的输入。这和写代码时把大函数拆成小函数是一个道理。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 240" role="img" aria-label="提示链：抽取、分类、起草回复三个 prompt 串联，中间插入校验步骤">
+  <rect class="bx" x="20" y="70" width="100" height="56" rx="10"/>
+  <text class="lbl" x="70" y="94" text-anchor="middle">客户邮件</text><text class="sm" x="70" y="112" text-anchor="middle">原始输入</text>
+  <path class="ln" d="M122 98 H150" marker-end="url(#ar)"/>
+
+  <rect class="bx-b" x="152" y="62" width="130" height="72" rx="10"/>
+  <text class="ttl on-b" x="217" y="88" text-anchor="middle">Prompt 1</text><text class="sm" x="217" y="108" text-anchor="middle">抽取关键字段</text><text class="sm" x="217" y="124" text-anchor="middle">→ JSON</text>
+  <path class="ln" d="M284 98 H310" marker-end="url(#ar)"/>
+  <polygon class="bx-g" points="340,74 368,98 340,122 312,98"/>
+  <text class="sm on-g" x="340" y="102" text-anchor="middle">校验</text>
+  <path class="ln" d="M370 98 H396" marker-end="url(#ar)"/>
+
+  <rect class="bx-p" x="398" y="62" width="130" height="72" rx="10"/>
+  <text class="ttl on-p" x="463" y="88" text-anchor="middle">Prompt 2</text><text class="sm" x="463" y="108" text-anchor="middle">分类：情感+部门</text><text class="sm" x="463" y="124" text-anchor="middle">→ 标签</text>
+  <path class="ln" d="M530 98 H556" marker-end="url(#ar)"/>
+  <polygon class="bx-g" points="586,74 614,98 586,122 558,98"/>
+  <text class="sm on-g" x="586" y="102" text-anchor="middle">校验</text>
+  <path class="ln" d="M616 98 H630" marker-end="url(#ar)"/>
+
+  <rect class="bx-a" x="632" y="62" width="108" height="72" rx="10"/>
+  <text class="ttl on-a" x="686" y="88" text-anchor="middle">Prompt 3</text><text class="sm" x="686" y="108" text-anchor="middle">起草回复</text><text class="sm" x="686" y="124" text-anchor="middle">→ 文本</text>
+
+  <path class="ln-r" d="M340 124 V172 H217 V138" marker-end="url(#ar-r)"/>
+  <text class="sm on-r" x="280" y="190" text-anchor="middle">不合格 → 重试这一步</text>
+  <text class="sm" x="380" y="226" text-anchor="middle">最终答案错了？逐个查看中间输出，立刻知道是哪一环出的问题</text>
+</svg>
+<figcaption>图 5-8　提示链：每个 prompt 只干一件事，步骤之间可以插入校验关卡</figcaption>
+</figure>
+
+<div class="tw"><table>
+  <tr><th>好处</th><th>说明</th></tr>
+  <tr><td>子任务范围小</td><td>每个 prompt 只做一件事，模型不用一次面对整个问题</td></tr>
+  <tr><td>明确的输入输出约定</td><td>每一步定义好 schema，便于校验、替换、复用</td></tr>
+  <tr><td>好调试</td><td>检查中间输出就能定位出错环节，不用在巨型 prompt 里瞎猜</td></tr>
+  <tr><td>组件复用</td><td>一个测试良好的“抽取邮件字段” prompt，工单分诊和销售线索两处都能用</td></tr>
+  <tr><td>更省 token、更快</td><td>每一步只看它需要的数据</td></tr>
+  <tr><td>内建护栏</td><td>步骤之间插入 JSON 校验、事实性打分等，在错误扩散前拦住</td></tr>
+  <tr><td>推理透明</td><td>中间结果形成审计轨迹，对合规审查、向他人解释都很有价值</td></tr>
+</table></div>
+
+<p>RAG 流水线、Agent 等系统都建立在这个模式之上（第 8 章起）。</p>
+
+<h2 id="tips">实用最佳实践</h2>
+
+<h3>1. 用正面表述，少用“不要”</h3>
+
+<div class="vs">
+  <div class="old"><div class="h">✗ 负面表述</div>
+    <div class="prompt" style="margin:0;border:none;border-radius:0"><div class="b">Do not include <code>sentiment:</code> in your response.</div></div>
+  </div>
+  <div class="new"><div class="h">✓ 正面表述</div>
+    <div class="prompt" style="margin:0;border:none;border-radius:0"><div class="b">Respond only with the sentiment value: positive, neutral, or negative.</div></div>
+  </div>
+</div>
+
+<p>负面说法迫使模型去推断“你想要的反面是什么”，容易出错。正面指令更短、更容易检查，模型也更能一致地遵守。</p>
+
+<h3>2. 和模型一起打磨 prompt（顺着偏见走）</h3>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 170" role="img" aria-label="顺着偏见走：先问模型自己会用什么标签，再把它的标签用到 prompt 里">
+  <rect class="bx" x="20" y="50" width="190" height="70" rx="10"/>
+  <text class="lbl" x="115" y="78" text-anchor="middle">① 只给句子，不给标签</text>
+  <text class="sm" x="115" y="100" text-anchor="middle">“这句话的情感是什么？”</text>
+  <path class="ln" d="M212 85 H270" marker-end="url(#ar)"/>
+  <rect class="bx-p" x="272" y="50" width="210" height="70" rx="10"/>
+  <text class="lbl on-p" x="377" y="78" text-anchor="middle">② 看模型自己用什么词</text>
+  <text class="sm" x="377" y="100" text-anchor="middle">比如它爱说 “mixed”</text>
+  <path class="ln" d="M484 85 H542" marker-end="url(#ar)"/>
+  <rect class="bx-g" x="544" y="50" width="196" height="70" rx="10"/>
+  <text class="lbl on-g" x="642" y="78" text-anchor="middle">③ 就用它的标签</text>
+  <text class="sm" x="642" y="100" text-anchor="middle">或在代码里映射成你的</text>
+  <text class="sm" x="380" y="152" text-anchor="middle">模型的训练偏见是天然存在的 —— 与其对抗，不如利用</text>
+</svg>
+<figcaption>图 5-9　Leaning into bias：用模型“习惯”的说法，通常更准确</figcaption>
+</figure>
+
+<p>你也可以直接问模型：“为了得到这样的结果，我该怎么改进这个 prompt？” 把输入输出示例一起给它，让它帮你写 prompt。</p>
+
+<h3>3. 把 prompt 当代码管理</h3>
+<p>好工程师的习惯：<strong>只要跑通了，哪怕是很小的改动也提交。</strong>对 prompt 一视同仁 —— 放进 Git 或专门的 prompt 管理工具，这样你总能回退到上一个可用版本，放心大胆地实验。</p>
+
+<h3>4. 系统地测试 prompt 变体</h3>
+<p>措辞的细微变化能彻底改变回答质量。可以自己对比，也可以用 PromptLayer 这类工具：</p>
+
+<div class="tw"><table>
+  <tr><th>方法</th><th>说明</th></tr>
+  <tr><td>A/B 测试</td><td>两个 prompt 版本正面对决，看哪个质量更高</td></tr>
+  <tr><td>人工审阅</td><td>抽样让领域专家评价清晰度、正确性、语气</td></tr>
+  <tr><td>跨模型评估</td><td>同一 prompt 发给 GPT-5 mini、Claude Haiku 4.5、Llama 3.2，选最合适的</td></tr>
+  <tr><td>回归基线</td><td>锁定一组“已知良好”的 prompt + 模型，定期重跑，检测模型更新后的质量漂移</td></tr>
+  <tr><td>自动指标</td><td>文本相似度用 BLEU / ROUGE，分类用准确率 / F1，无需人工也能打分</td></tr>
+</table></div>
+
+<h2 id="summary">小结</h2>
+
+<div class="tw"><table>
+  <tr><th>技巧</th><th>核心</th></tr>
+  <tr><td>指令提示</td><td>简洁、正面的指令就能做数据抽取、PII 脱敏、合成数据，不用手写解析器</td></tr>
+  <tr><td>角色提示</td><td>一个身份 = 一堆隐式指令：收窄范围、统一语气、节省 token</td></tr>
+  <tr><td>Zero / One / Few-shot</td><td>用示例教模型认识你的标签和输出格式</td></tr>
+  <tr><td>思维链 CoT</td><td>让模型一步步推理，用更多 token 换更好的逻辑和透明度</td></tr>
+  <tr><td>草稿链 CoD</td><td>CoT 的精简版，控制延迟和成本</td></tr>
+  <tr><td>提示链</td><td>像组合函数一样串联 prompt，模块化、可复用、可审计</td></tr>
+  <tr><td>最佳实践</td><td>正面表述、和模型协作迭代、版本管理、系统化测试</td></tr>
+</table></div>
+
+<div class="exercise">
+  <h3>动手练习</h3>
+  <ol>
+    <li>把情感分析 prompt 做成 zero-shot、one-shot、few-shot 三个版本，拿同一批帖子测试，记录各自答对了几条。</li>
+    <li>用三个角色问 “How do I reset my password?”：<strong>安全工程师、客服代表、幼儿园老师</strong>。比较语气、深度和恰当性。</li>
+    <li>串联两个 prompt：(a) 从一段新闻中抽取关键事实；(b) 根据事实写一句话摘要。和一个大 prompt 一步到位的结果比较，哪个更好？</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

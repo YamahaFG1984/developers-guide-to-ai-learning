@@ -1,0 +1,727 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 7 章 · 向量数据库实战 — AI 开发者指南</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="7">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 7 章 · 第三部分开篇</span>
+<h1>向量数据库实战</h1>
+<p class="lede">
+  Netflix 推荐你会一口气追完的剧、Spotify 给你一张新歌单、购物网站猜中你想买什么……
+  这些“它怎么知道的？”的体验背后，默默干活的是 <strong>embedding 模型</strong>。
+  它让我们按<strong>含义</strong>而不是按关键词去搜索。本章用开源向量数据库 Chroma 搭一个语义搜索和一个推荐引擎。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>理解关键词搜索为什么不够用，以及 <strong>向量嵌入（embedding）</strong>是什么</li>
+    <li>用 Sentence Transformers 生成 embedding、计算相似度</li>
+    <li>学会挑选 embedding 模型，能“读懂”模型名称</li>
+    <li>理解向量数据库怎么检索（k-NN、ANN、距离度量）</li>
+    <li>用 Chroma 实现<strong>语义搜索</strong>和<strong>推荐引擎</strong>，并用元数据过滤</li>
+  </ul>
+</div>
+
+<div class="box note">
+  <div class="t">&#128194; 对应代码：<code>part3/vector_databases/</code></div>
+  <ul>
+    <li><code>sentence_transformer.py</code> —— 生成 embedding 与相似度</li>
+    <li><code>product_search_simple.py</code> —— 语义搜索</li>
+    <li><code>product_recommender.py</code> / <code>product_recommender_with_filter.py</code> —— 推荐引擎</li>
+    <li><code>products.csv</code> —— 第 5 章生成的合成商品数据</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="meaning">让机器理解“含义”</h2>
+
+<p>机器只认 0 和 1，而人类语言的意思取决于上下文。看这两句话里的 <strong>bank</strong>：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 200" role="img" aria-label="同一个词 bank 在不同句子里有不同含义，embedding 会把它们放在不同位置">
+  <rect class="bx-b" x="20" y="30" width="330" height="56" rx="10"/>
+  <text class="lbl" x="34" y="54">I'm going to the <tspan font-weight="700" class="on-b">bank</tspan> to deposit</text>
+  <text class="lbl" x="34" y="74">some money.</text>
+  <rect class="bx-g" x="20" y="110" width="330" height="56" rx="10"/>
+  <text class="lbl" x="34" y="134">You'll catch more fish if you walk</text>
+  <text class="lbl" x="34" y="154">down to the <tspan font-weight="700" class="on-g">bank</tspan>.</text>
+
+  <path class="ln-b" d="M352 58 L470 70" marker-end="url(#ar-b)"/>
+  <path class="ln-g" d="M352 138 L470 136" marker-end="url(#ar-g)"/>
+
+  <rect class="bx-d" x="472" y="20" width="268" height="160" rx="12"/>
+  <text class="sm" x="486" y="40">含义空间</text>
+  <circle class="dot-b" cx="520" cy="72" r="7"/><text class="sm on-b" x="532" y="76">bank（银行）</text>
+  <circle cx="610" cy="60" r="4" class="dot-b" opacity=".5"/><text class="sm" x="618" y="64">存款</text>
+  <circle cx="650" cy="92" r="4" class="dot-b" opacity=".5"/><text class="sm" x="658" y="96">贷款</text>
+  <circle class="dot-g" cx="540" cy="140" r="7"/><text class="sm on-g" x="552" y="144">bank（河岸）</text>
+  <circle cx="640" cy="130" r="4" class="dot-g" opacity=".5"/><text class="sm" x="648" y="134">河流</text>
+  <circle cx="680" cy="160" r="4" class="dot-g" opacity=".5"/><text class="sm" x="688" y="164">钓鱼</text>
+</svg>
+<figcaption>图 7-1　我们靠整句话理解词义；embedding 模型被训练来做同样的事</figcaption>
+</figure>
+
+<p>
+  Embedding 模型和 LLM 一样在海量文本上训练，通过<strong>词语在不同上下文中如何一起出现</strong>来学到含义，
+  然后把文字编码成机器友好的数字。它们本来就是 LLM 的基础部件，但我们也可以直接拿来用。
+</p>
+
+<h2 id="keyword">关键词搜索的局限</h2>
+
+<p>假设你想在商品库里找“冬天穿的厚外套”，用 SQL 大概会这样写：</p>
+
+<div class="code" data-lang="sql">
+<pre>
+-- 方式 1：字面匹配
+SELECT * FROM product_descriptions WHERE description LIKE '%winter jacket%';
+
+-- 方式 2：全文搜索（能处理词形变化和部分同义词）
+SELECT * FROM product_descriptions
+WHERE MATCH(description) AGAINST('winter jacket' IN NATURAL LANGUAGE MODE);
+</pre>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 230" role="img" aria-label="关键词搜索只能找到字面匹配的商品，语义搜索能找到意思相近但用词不同的商品">
+  <rect class="bx" x="270" y="12" width="220" height="36" rx="8"/>
+  <text class="mono" x="380" y="35" text-anchor="middle">"winter jacket"</text>
+
+  <text class="ttl on-r" x="170" y="80" text-anchor="middle">关键词搜索</text>
+  <rect class="bx-g" x="30" y="94" width="280" height="30" rx="6"/><text class="sm" x="42" y="114">✓ Men's <tspan font-weight="700">Winter Jacket</tspan>, waterproof</text>
+  <rect class="bx-r" x="30" y="132" width="280" height="30" rx="6"/><text class="sm" x="42" y="152">✗ Heavy coat for cold weather</text>
+  <rect class="bx-r" x="30" y="170" width="280" height="30" rx="6"/><text class="sm" x="42" y="190">✗ Outerwear for frigid climates</text>
+
+  <text class="ttl on-g" x="590" y="80" text-anchor="middle">语义（向量）搜索</text>
+  <rect class="bx-g" x="450" y="94" width="280" height="30" rx="6"/><text class="sm" x="462" y="114">✓ Men's Winter Jacket, waterproof</text>
+  <rect class="bx-g" x="450" y="132" width="280" height="30" rx="6"/><text class="sm" x="462" y="152">✓ Heavy coat for cold weather</text>
+  <rect class="bx-g" x="450" y="170" width="280" height="30" rx="6"/><text class="sm" x="462" y="190">✓ Outerwear for frigid climates</text>
+  <path class="ln" d="M330 50 L200 74"/><path class="ln" d="M430 50 L560 74"/>
+  <text class="sm" x="380" y="222" text-anchor="middle">用词不同但意思一样的商品，关键词搜索会全部漏掉</text>
+</svg>
+<figcaption>图 7-2　关键词搜索找“字”，语义搜索找“意思”</figcaption>
+</figure>
+
+<p>
+  向量数据库用 embedding 模型把文字（甚至图片、音频）的含义编码成一组数字，这组数字叫<strong>向量嵌入（vector embedding）</strong>。
+  于是我们可以按“意思有多接近”来搜索。
+</p>
+
+<div class="box tip">
+  <div class="t">&#128161; 先看看你现有的数据库</div>
+  <p>PostgreSQL（<strong>pgvector</strong> 扩展）、MongoDB、Cassandra 等已经直接或通过扩展支持向量。需要相似性搜索时，先检查现有数据库能不能做，再考虑引入专门的向量数据库。</p>
+</div>
+
+<h2 id="embedding">理解向量嵌入</h2>
+
+<p>
+  <strong>Embedding 模型</strong>是一种专门的神经网络，把人能理解的数据转成一串定长的浮点数。
+  对我们来说它就是一个<strong>数组</strong>；对模型来说，它是<strong>高维空间里的一个点</strong>。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 120" role="img" aria-label="一句话经过 embedding 模型变成一个定长的浮点数数组">
+  <rect class="bx" x="20" y="30" width="230" height="60" rx="10"/>
+  <text class="sm" x="135" y="55" text-anchor="middle">"I'm having password issues.</text>
+  <text class="sm" x="135" y="73" text-anchor="middle">Can you help me log in?"</text>
+  <path class="ln" d="M252 60 H300" marker-end="url(#ar)"/>
+  <rect class="bx-p" x="302" y="34" width="140" height="52" rx="10"/>
+  <text class="ttl on-p" x="372" y="58" text-anchor="middle">Embedding 模型</text>
+  <text class="sm" x="372" y="76" text-anchor="middle">all-MiniLM-L6-v2</text>
+  <path class="ln" d="M444 60 H492" marker-end="url(#ar)"/>
+  <rect class="bx-g" x="494" y="30" width="246" height="60" rx="10"/>
+  <text class="mono on-g" x="617" y="56" text-anchor="middle">[0.01, 0.04, 0.07, …, 0.05]</text>
+  <text class="sm" x="617" y="76" text-anchor="middle">384 个浮点数 = 384 维空间里的一个点</text>
+</svg>
+<figcaption>图 7-3　文本 → embedding：长度固定，与原文长短无关</figcaption>
+</figure>
+
+<p>把知识库文章都画成空间里的点，意思相近的文章会<strong>聚在一起</strong>。用户的问题也变成一个点，离它最近的文章就是最相关的：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 300" role="img" aria-label="向量空间示意：三篇登录相关文章聚在一起，用户问题的点就在它们旁边，订阅相关文章离得很远">
+  <path class="ln" d="M60 270 H720"/><path class="ln" d="M60 270 V20"/>
+  <text class="sm" x="720" y="290" text-anchor="end">维度 1</text>
+  <text class="sm" x="50" y="30" text-anchor="end">维度 2</text>
+
+  <circle class="bx-b" cx="230" cy="130" r="95" style="fill-opacity:.5"/>
+  <circle class="dot-b" cx="190" cy="100" r="8"/><text class="sm" x="120" y="84">How to reset your password</text>
+  <circle class="dot-b" cx="260" cy="150" r="8"/><text class="sm" x="272" y="154">Logging in with password and MFA</text>
+  <circle class="dot-b" cx="180" cy="180" r="8"/><text class="sm" x="80" y="208">Login troubleshooting (company network)</text>
+
+  <circle class="dot-a" cx="230" cy="122" r="9"/>
+  <path class="ln-a" d="M239 118 L360 60" />
+  <rect class="bx-a" x="362" y="42" width="250" height="30" rx="6"/>
+  <text class="sm on-a" x="372" y="62">用户问题：I'm having password issues…</text>
+
+  <circle class="dot-p" cx="600" cy="220" r="8"/><text class="sm" x="480" y="246">How to change your subscription level</text>
+  <path class="ln-d" d="M322 172 L592 218"/>
+  <text class="sm" x="440" y="186">距离很远 → 不相关</text>
+</svg>
+<figcaption>图 7-4　相似 = 距离近。向量搜索就是“找离问题最近的点”</figcaption>
+</figure>
+
+<h3>维度是什么？用水果来理解</h3>
+
+<p>
+  向量里的<strong>每个数字是一个维度</strong>，代表模型学到的某个<strong>特征</strong>，数值表示数据和这个特征有多吻合。
+  假设有一个专门描述水果的三维空间：甜度、大小、柑橘味。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 290" role="img" aria-label="水果三维空间：香蕉和苹果靠得近，柠檬离得远">
+  <path class="ln" d="M200 240 H560" marker-end="url(#ar)"/><text class="lbl" x="566" y="244">甜度</text>
+  <path class="ln" d="M200 240 V30" marker-end="url(#ar)"/><text class="lbl" x="206" y="30">大小</text>
+  <path class="ln" d="M200 240 L90 290" marker-end="url(#ar)"/><text class="lbl" x="40" y="280">柑橘味</text>
+
+  <circle class="dot-a" cx="480" cy="100" r="11"/><text class="ttl on-a" x="496" y="92">Banana</text><text class="mono" x="496" y="110">(8, 7, 0)</text>
+  <circle class="dot-r" cx="390" cy="118" r="11"/><text class="ttl on-r" x="336" y="150">Apple</text><text class="mono" x="316" y="168">(5, 6, 1)</text>
+  <circle class="dot-g" cx="200" cy="200" r="11"/><text class="ttl on-g" x="120" y="180">Lemon</text><text class="mono" x="96" y="198">(2, 4, 8)</text>
+
+  <path class="ln-g" d="M401 115 L468 103"/><text class="sm on-g" x="420" y="96">近</text>
+  <path class="ln-d" d="M211 196 L380 124"/><text class="sm" x="270" y="148">远</text>
+  <text class="sm" x="560" y="200">（柠檬的柑橘味维度把它推向</text>
+  <text class="sm" x="560" y="218">左下前方，远离另外两个）</text>
+</svg>
+<figcaption>图 7-5　在“甜度、大小、柑橘味”空间里，香蕉和苹果更接近</figcaption>
+</figure>
+
+<div class="box warn">
+  <div class="t">&#9888; 真实的维度没有“人话”含义</div>
+  <p>
+    水果的例子只是帮助理解。现实中每个维度是模型在训练中自己学到的特征，<strong>我们并不知道它们代表什么</strong>。
+    我们只知道：<strong>两个点越近，原始数据的意思越相似</strong>。一般来说维度越多，模型越准确。
+  </p>
+</div>
+
+<div class="tw"><table>
+  <tr><th>Embedding 模型</th><th>维度</th><th>说明</th></tr>
+  <tr><td>text-embedding-ada-002</td><td>1,536</td><td>仅文本</td></tr>
+  <tr><td>text-embedding-3-small</td><td>1,536（可降到 512）</td><td>仅文本，比 ada-002 更准</td></tr>
+  <tr><td>text-embedding-3-large</td><td>3,072（可降到 256 / 1,024）</td><td>最准；支持“套娃（matryoshka）”缩放以加快搜索</td></tr>
+  <tr><td>clip-ViT-B-32</td><td>512</td><td><strong>多模态</strong>：文字和图片在同一个空间</td></tr>
+</table></div>
+
+<p>多模态模型很神奇：文字 “apple” 和一张苹果照片的 embedding 会落在彼此附近 —— 它们只是同一个事物的两种表示。</p>
+
+<h2 id="sbert">用 Sentence Transformers 生成 embedding</h2>
+
+<p>
+  Chroma 默认用 <strong>SBERT（Sentence-BERT）</strong>，它是 BERT 的一个变体，专门把<strong>整个句子</strong>转成向量。
+  SBERT 通过 Hugging Face 维护的 <a href="https://sbert.net">Sentence Transformers</a> 库分发。
+</p>
+
+<div class="code" data-lang="bash">
+<pre>
+pip install sentence-transformers==5.1.2
+</pre>
+</div>
+
+<div class="code" data-lang="python" data-file="part3/vector_databases/sentence_transformer.py">
+<pre>
+from sentence_transformers import SentenceTransformer
+
+model = SentenceTransformer("all-MiniLM-L6-v2")      # ❶ 速度、体积、效果平衡得很好
+
+sentences = [
+    "Sony Wireless Noise-Canceling Headphones",
+    "Canon Professional DSLR Camera Kit",
+    "Jenson Wireless Earbuds Pro",
+    "Panasonic Wireless Noise-Reduction Headphones",
+]
+
+embeddings = model.encode(sentences)                 # 一次编码所有句子
+
+print(embeddings[0])                                 # [ 9.95e-02  4.46e-02  2.07e-03 ... ]
+print(f"Dimensions: {len(embeddings[0])}")           # Dimensions: 384
+
+# 计算第 0 句和所有句子的相似度
+similarities = model.similarity(embeddings[0], embeddings)
+for idx, embedding in enumerate(embeddings):         # enumerate：同时拿到下标和元素
+    print(f"- {sentences[idx]}, Score: {similarities[0][idx]:.4f}")   # :.4f 保留 4 位小数
+</pre>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 200" role="img" aria-label="与 Sony 降噪耳机的相似度：自己 1.0，Panasonic 降噪耳机 0.75，Jenson 无线耳塞 0.48，Canon 相机 0.09">
+  <text class="sm" x="20" y="20">与 “Sony Wireless Noise-Canceling Headphones” 的相似度（0 到 1，越高越像）</text>
+  <text class="lbl" x="20" y="54">Sony 降噪耳机（自己）</text>
+  <rect class="fill-g" x="280" y="40" width="400" height="22" rx="4"/><text class="lbl" x="688" y="56">1.0000</text>
+  <text class="lbl" x="20" y="92">Panasonic 降噪耳机</text>
+  <rect class="fill-g" x="280" y="78" width="300" height="22" rx="4"/><text class="lbl" x="588" y="94">0.7500</text>
+  <text class="lbl" x="20" y="130">Jenson 无线耳塞</text>
+  <rect class="fill-b" x="280" y="116" width="191" height="22" rx="4"/><text class="lbl" x="479" y="132">0.4783</text>
+  <text class="lbl" x="20" y="168">Canon 单反相机套装</text>
+  <rect class="fill-f" x="280" y="154" width="36" height="22" rx="4"/><text class="lbl" x="324" y="170">0.0892</text>
+</svg>
+<figcaption>图 7-6　不同品牌的同类商品得分很高；完全不相关的相机得分很低</figcaption>
+</figure>
+
+<p>实际开发中我们不会自己算距离 —— 交给向量数据库。但理解底层原理，能帮你在结果不对劲时找到原因。</p>
+
+<h2 id="choose">怎么选 embedding 模型</h2>
+
+<p>Embedding 模型的选择会显著影响结果：它们为特定目的训练，关注的特征可能完全不同，还带着训练数据的偏见。</p>
+
+<div class="tw"><table>
+  <tr><th>问题</th><th>考量</th></tr>
+  <tr><td>嵌入什么数据？</td><td>文本用 Sentence Transformers；图片、音频需要多模态模型</td></tr>
+  <tr><td>什么领域？</td><td>医学、法律等专业文本，考虑在该领域训练过的模型</td></tr>
+  <tr><td>要达成什么？</td><td>做商品推荐，就要能深度理解商品描述的模型</td></tr>
+  <tr><td>什么语言？</td><td>需要多语言就选支持多语言输入的模型</td></tr>
+  <tr><td>性能要求？</td><td>有的模型为推理速度优化，适合实时场景，但可能牺牲准确性</td></tr>
+  <tr><td>支持度如何？</td><td>开放权重看社区、文档、许可证；商业模型看厂商是否稳定</td></tr>
+  <tr><td>能否微调？</td><td>打算适配领域需求时很关键（第四部分）</td></tr>
+  <tr><td>成本？</td><td>大模型 token 或算力成本更高；<strong>维度越多，存储也越多</strong></td></tr>
+  <tr><td>每次最多多少 token？</td><td>embedding 模型的输入上限通常远小于 LLM，第 8 章用<strong>分块</strong>解决</td></tr>
+</table></div>
+
+<p>
+  去哪找：托管 API 厂商会给你几个选项；开放权重模型去 <a href="https://huggingface.co/models">Hugging Face</a>（超过一百万个模型，可以按库 <code>sentence-transformers</code> 筛选）；
+  也可以先看 <strong>Hugging Face Embedding Leaderboard（MTEB 排行榜）</strong>挑几个候选，再用自己的数据实验。
+</p>
+
+<h2 id="names">读懂模型名称</h2>
+
+<p>模型名就像 AI 的身份证：谁做的、什么家族、多大、经过什么训练和优化，都写在用连字符隔开的片段里。</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 240" role="img" aria-label="拆解模型名 google/gemma-3-4b-it-qat-q4_0-gguf 的每个片段">
+  <rect class="bx-b" x="20"  y="30" width="120" height="40" rx="6"/><text class="mono on-b" x="80"  y="55" text-anchor="middle">google/gemma</text>
+  <rect class="bx"   x="146" y="30" width="36"  height="40" rx="6"/><text class="mono" x="164" y="55" text-anchor="middle">3</text>
+  <rect class="bx-a" x="188" y="30" width="46"  height="40" rx="6"/><text class="mono on-a" x="211" y="55" text-anchor="middle">4b</text>
+  <rect class="bx-g" x="240" y="30" width="46"  height="40" rx="6"/><text class="mono on-g" x="263" y="55" text-anchor="middle">it</text>
+  <rect class="bx-p" x="292" y="30" width="56"  height="40" rx="6"/><text class="mono on-p" x="320" y="55" text-anchor="middle">qat</text>
+  <rect class="bx-p" x="354" y="30" width="66"  height="40" rx="6"/><text class="mono on-p" x="387" y="55" text-anchor="middle">q4_0</text>
+  <rect class="bx-r" x="426" y="30" width="66"  height="40" rx="6"/><text class="mono on-r" x="459" y="55" text-anchor="middle">gguf</text>
+
+  <path class="ln-d" d="M80 72 V104"/><text class="sm" x="20" y="120">厂商 / 家族</text>
+  <path class="ln-d" d="M164 72 V140"/><text class="sm" x="120" y="156">第 3 代</text>
+  <path class="ln-d" d="M211 72 V176"/><text class="sm" x="150" y="192">40 亿参数</text>
+  <path class="ln-d" d="M263 72 V212"/><text class="sm" x="210" y="228">指令微调</text>
+
+  <text class="sm" x="520" y="40">pt = 预训练基座，只会续写</text>
+  <text class="sm" x="520" y="60">it = 指令微调，适合聊天和下命令</text>
+  <text class="sm" x="520" y="92">qat = 量化感知训练，量化后损失更小</text>
+  <text class="sm" x="520" y="112">q4_0 = 4 位量化，体积小、跑得快</text>
+  <text class="sm" x="520" y="144">gguf = 本地 CPU/GPU 推理常用格式</text>
+  <text class="sm" x="520" y="176">b = billion（十亿）参数</text>
+  <text class="sm" x="520" y="196">参数越多越强，也越吃硬件</text>
+</svg>
+<figcaption>图 7-7　一个模型名能告诉你：谁做的、多大、能不能聊天、你的电脑跑不跑得动</figcaption>
+</figure>
+
+<div class="tw"><table>
+  <tr><th>片段</th><th>含义</th><th>例子</th></tr>
+  <tr><td><code>27b</code> / <code>4b</code> / <code>70B</code></td><td>参数量（十亿）。参数是训练中被调整的内部数值</td><td>gemma-3-<strong>27b</strong>-pt</td></tr>
+  <tr><td><code>pt</code></td><td>Pretrained：只做了预训练的原始基座，没为对话调优</td><td>gemma-3-27b-<strong>pt</strong></td></tr>
+  <tr><td><code>it</code></td><td>Instruction-tuned：更擅长听指令、对话。<strong>做聊天机器人通常选它</strong></td><td>gemma-3-27b-<strong>it</strong></td></tr>
+  <tr><td><code>qat</code></td><td>量化感知训练：训练时就考虑了量化，量化后性能损失更小</td><td>gemma-3-4b-it-<strong>qat</strong>-…</td></tr>
+  <tr><td><code>q4_0</code></td><td>4 位量化：用 4 位而不是 16/32 位表示参数，体积更小、推理更快</td><td>…-<strong>q4_0</strong>-gguf</td></tr>
+  <tr><td><code>gguf</code></td><td>为本地高效推理优化的文件格式</td><td>…-<strong>gguf</strong></td></tr>
+  <tr><td><code>uncased</code></td><td>训练时忽略大小写（Apple 和 apple 一样）</td><td>distilbert-base-<strong>uncased</strong></td></tr>
+  <tr><td><code>finetuned-sst-2</code></td><td>在 SST-2（斯坦福情感树库）上微调过 → 擅长情感分析</td><td>distilbert-base-uncased-<strong>finetuned-sst-2</strong>-english</td></tr>
+  <tr><td><code>Distill</code></td><td>知识蒸馏：小“学生”模型模仿大“老师”模型</td><td>DeepSeek-R1-<strong>Distill</strong>-Llama-70B</td></tr>
+</table></div>
+
+<h2 id="retrieval">向量数据库怎么检索</h2>
+
+<p>向量数据库专门用来存储海量向量、并高效计算它们之间的距离。用在 RAG 里的完整流程是三步：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 260" role="img" aria-label="三步：把文章嵌入存入向量库；把问题嵌入并查询最近的文章；用文章增强 prompt 发给 LLM">
+  <text class="ttl on-b" x="20" y="24">① 存入（提前做一次）</text>
+  <rect class="bx" x="20" y="36" width="180" height="70" rx="8"/>
+  <text class="sm" x="30" y="56">reset your password</text><text class="sm" x="30" y="76">password and MFA</text><text class="sm" x="30" y="96">company network…</text>
+  <path class="ln-b" d="M202 70 H240" marker-end="url(#ar-b)"/>
+  <rect class="bx-p" x="242" y="46" width="90" height="48" rx="8"/><text class="lbl on-p" x="287" y="75" text-anchor="middle">Embedding</text>
+  <path class="ln-b" d="M334 70 H372" marker-end="url(#ar-b)"/>
+  <rect class="bx-b" x="374" y="30" width="140" height="130" rx="12"/>
+  <text class="ttl on-b" x="444" y="56" text-anchor="middle">向量数据库</text>
+  <circle class="dot-b" cx="410" cy="90" r="5"/><circle class="dot-b" cx="430" cy="104" r="5"/><circle class="dot-b" cx="416" cy="118" r="5"/>
+  <circle class="dot-p" cx="486" cy="136" r="5"/><circle class="dot-p" cx="476" cy="80" r="5"/>
+
+  <text class="ttl on-a" x="20" y="150">② 查询（每次请求）</text>
+  <rect class="bx-a" x="20" y="162" width="180" height="44" rx="8"/><text class="sm" x="30" y="182">I'm having password</text><text class="sm" x="30" y="198">issues. Can you help?</text>
+  <path class="ln-a" d="M202 184 H240" marker-end="url(#ar-a)"/>
+  <rect class="bx-p" x="242" y="160" width="90" height="48" rx="8"/><text class="lbl on-p" x="287" y="189" text-anchor="middle">Embedding</text>
+  <path class="ln-a" d="M334 184 L372 140" marker-end="url(#ar-a)"/>
+  <text class="sm on-a" x="344" y="220">k-NN</text>
+
+  <path class="ln-g" d="M516 96 H556" marker-end="url(#ar-g)"/>
+  <text class="ttl on-g" x="560" y="24">③ 增强 prompt</text>
+  <rect class="bx-g" x="558" y="36" width="182" height="120" rx="10"/>
+  <text class="sm" x="570" y="58">Context:</text>
+  <text class="sm" x="580" y="78">reset your password</text>
+  <text class="sm" x="580" y="96">password and MFA</text>
+  <text class="sm" x="570" y="120">Question: I'm having</text>
+  <text class="sm" x="570" y="138">password issues…</text>
+  <path class="ln-g" d="M649 158 V192" marker-end="url(#ar-g)"/>
+  <rect class="bx-p" x="604" y="194" width="90" height="40" rx="8"/><text class="ttl on-p" x="649" y="219" text-anchor="middle">LLM</text>
+</svg>
+<figcaption>图 7-8　向量数据库为什么对 RAG 那么重要（第 8 章会搭一个完整的 RAG）</figcaption>
+</figure>
+
+<h3>最近邻：精确（ENN）还是近似（ANN）</h3>
+
+<p>
+  查询时，数据库返回离问题最近的 <strong>k 个邻居（k-NN）</strong>。最笨的办法是算出和每一个向量的距离 ——
+  这叫<strong>精确最近邻（ENN）</strong>，结果保证准确，但数据一多就慢得无法接受。
+  所以向量数据库通常用<strong>近似最近邻（ANN）</strong>：借助索引和聚类等捷径，只搜“最可能”的区域。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 250" role="img" aria-label="ENN 要计算和所有点的距离；ANN 先找到最近的簇，只在簇内搜索">
+  <text class="ttl" x="190" y="22" text-anchor="middle">ENN：挨个算</text>
+  <rect class="bx-d" x="30" y="34" width="320" height="190" rx="10"/>
+  <circle class="dot-a" cx="190" cy="128" r="7"/>
+  <g class="ln-d">
+    <path d="M190 128 L70 60"/><path d="M190 128 L120 190"/><path d="M190 128 L300 70"/><path d="M190 128 L320 190"/>
+    <path d="M190 128 L90 130"/><path d="M190 128 L240 200"/><path d="M190 128 L230 60"/><path d="M190 128 L290 130"/>
+  </g>
+  <circle class="dot-b" cx="70" cy="60" r="5"/><circle class="dot-b" cx="120" cy="190" r="5"/><circle class="dot-b" cx="300" cy="70" r="5"/><circle class="dot-b" cx="320" cy="190" r="5"/>
+  <circle class="dot-b" cx="90" cy="130" r="5"/><circle class="dot-b" cx="240" cy="200" r="5"/><circle class="dot-b" cx="230" cy="60" r="5"/><circle class="dot-b" cx="290" cy="130" r="5"/>
+  <text class="sm" x="190" y="244" text-anchor="middle">保证最准，但数百万条时太慢</text>
+
+  <text class="ttl" x="570" y="22" text-anchor="middle">ANN：先找区域，再搜附近</text>
+  <rect class="bx-d" x="410" y="34" width="320" height="190" rx="10"/>
+  <circle class="bx-g" cx="500" cy="100" r="50"/>
+  <circle class="bx" cx="650" cy="90" r="45"/>
+  <circle class="bx" cx="620" cy="180" r="38"/>
+  <circle class="dot-b" cx="480" cy="90" r="5"/><circle class="dot-b" cx="515" cy="120" r="5"/><circle class="dot-b" cx="490" cy="130" r="5"/>
+  <circle class="dot-b" cx="640" cy="80" r="5"/><circle class="dot-b" cx="665" cy="105" r="5"/>
+  <circle class="dot-b" cx="610" cy="175" r="5"/><circle class="dot-b" cx="635" cy="190" r="5"/>
+  <circle class="dot-a" cx="505" cy="100" r="7"/>
+  <path class="ln-g" d="M505 100 L480 90"/><path class="ln-g" d="M505 100 L515 120"/><path class="ln-g" d="M505 100 L490 130"/>
+  <text class="sm" x="570" y="244" text-anchor="middle">极快，结果非常接近但不保证完全精确</text>
+</svg>
+<figcaption>图 7-9　ANN 用“效率”换“绝对正确”，这是选型时要记住的权衡</figcaption>
+</figure>
+
+<h3>距离怎么算</h3>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 210" role="img" aria-label="三种距离度量：L2 欧氏距离看两点直线距离，cosine 看方向夹角，内积同时看方向和长度">
+  <g>
+    <path class="ln" d="M40 180 H220"/><path class="ln" d="M40 180 V40"/>
+    <circle class="dot-b" cx="110" cy="80" r="6"/><circle class="dot-a" cx="180" cy="120" r="6"/>
+    <path class="ln-a" d="M110 80 L180 120" stroke-width="2.5"/>
+    <text class="ttl" x="130" y="30" text-anchor="middle">L2（欧氏）</text>
+    <text class="sm" x="130" y="202" text-anchor="middle">两点间的直线距离 · Chroma 默认</text>
+  </g>
+  <g>
+    <path class="ln" d="M290 180 H470"/><path class="ln" d="M290 180 V40"/>
+    <path class="ln-b" d="M290 180 L360 70" marker-end="url(#ar-b)"/><path class="ln-a" d="M290 180 L440 110" marker-end="url(#ar-a)"/>
+    <path class="ln-g" d="M318 136 A 50 50 0 0 1 336 146"/>
+    <text class="sm on-g" x="340" y="130">夹角</text>
+    <text class="ttl" x="380" y="30" text-anchor="middle">cosine（余弦）</text>
+    <text class="sm" x="380" y="202" text-anchor="middle">只看方向是否一致</text>
+  </g>
+  <g>
+    <path class="ln" d="M540 180 H720"/><path class="ln" d="M540 180 V40"/>
+    <path class="ln-b" d="M540 180 L600 90" marker-end="url(#ar-b)"/><path class="ln-a" d="M540 180 L700 60" marker-end="url(#ar-a)"/>
+    <text class="ttl" x="630" y="30" text-anchor="middle">ip（内积）</text>
+    <text class="sm" x="630" y="202" text-anchor="middle">方向 + 长度都考虑</text>
+  </g>
+</svg>
+<figcaption>图 7-10　三种距离度量</figcaption>
+</figure>
+
+<div class="code" data-lang="python">
+<pre>
+collection = client.create_collection(
+    name="products",
+    embedding_function=embedding_function,
+    metadata={"hnsw:space": "cosine"}     # 只能在创建 collection 时设置
+)
+</pre>
+</div>
+
+<h2 id="search">实战一：语义搜索</h2>
+
+<ol class="steps">
+  <li><strong>读取商品数据</strong>从 <code>products.csv</code> 加载所有商品。</li>
+  <li><strong>准备 embedding 函数</strong>使用 <code>all-MiniLM-L6-v2</code>。</li>
+  <li><strong>创建 collection</strong>告诉 Chroma 用哪个 embedding 函数。</li>
+  <li><strong>拼接文本</strong>把每个商品的标题和描述合成一段文字。</li>
+  <li><strong>写入</strong>文本 + 元数据 + ID 一起存进去，Chroma 自动生成 embedding。</li>
+  <li><strong>查询</strong>用自然语言提问，拿回最相近的 k 个商品。</li>
+</ol>
+
+<div class="code" data-lang="bash">
+<pre>
+pip install chromadb==1.2.1 pandas==2.3.3 numpy==1.26.4
+</pre>
+</div>
+
+<div class="code" data-lang="python" data-file="part3/vector_databases/product_search_simple.py（节选）">
+<pre>
+import chromadb
+from chromadb.utils import embedding_functions
+import pandas as pd
+
+client = chromadb.Client()                    # 临时（内存）客户端，程序退出数据就没了
+
+embedding_function = embedding_functions.SentenceTransformerEmbeddingFunction(
+    model_name="all-MiniLM-L6-v2"
+)
+
+collection = client.create_collection(
+    name="product_search",
+    embedding_function=embedding_function     # collection 会替我们生成 embedding
+)
+
+products_df = pd.read_csv('products.csv')                          # DataFrame：按列名取数据
+all_titles_and_descriptions = zip(products_df['title'], products_df['description'])
+texts = [f"{title} {desc}" for title, desc in all_titles_and_descriptions]   # 列表推导式
+</pre>
+</div>
+
+<p>一个 Chroma <strong>collection</strong> 就像一张表，每条记录有四部分：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 170" role="img" aria-label="Chroma collection 的每条记录包含 id、document、embedding 和 metadata">
+  <rect class="bx-a" x="20" y="20" width="90" height="34" rx="6"/><text class="ttl on-a" x="65" y="42" text-anchor="middle">ids</text>
+  <rect class="bx-b" x="116" y="20" width="250" height="34" rx="6"/><text class="ttl on-b" x="241" y="42" text-anchor="middle">documents</text>
+  <rect class="bx-p" x="372" y="20" width="160" height="34" rx="6"/><text class="ttl on-p" x="452" y="42" text-anchor="middle">embeddings</text>
+  <rect class="bx-g" x="538" y="20" width="202" height="34" rx="6"/><text class="ttl on-g" x="639" y="42" text-anchor="middle">metadatas</text>
+
+  <rect class="bx" x="20" y="60" width="90" height="30" rx="4"/><text class="mono" x="65" y="80" text-anchor="middle">E003</text>
+  <rect class="bx" x="116" y="60" width="250" height="30" rx="4"/><text class="sm" x="126" y="80">Professional DSLR Camera Kit Capture…</text>
+  <rect class="bx" x="372" y="60" width="160" height="30" rx="4"/><text class="mono" x="382" y="80">[0.02, -0.11, …]</text>
+  <rect class="bx" x="538" y="60" width="202" height="30" rx="4"/><text class="sm" x="548" y="80">category: Electronics, $1499.99</text>
+
+  <text class="sm" x="65" y="116" text-anchor="middle">唯一标识</text>
+  <text class="sm" x="241" y="116" text-anchor="middle">原始文本（用来生成向量）</text>
+  <text class="sm" x="452" y="116" text-anchor="middle">Chroma 自动生成</text>
+  <text class="sm" x="639" y="116" text-anchor="middle">过滤和展示用的属性</text>
+  <text class="sm" x="380" y="150" text-anchor="middle">ID 还可以用来去关系型数据库里查商品的完整信息</text>
+</svg>
+<figcaption>图 7-11　Collection 里的一条记录</figcaption>
+</figure>
+
+<div class="code" data-lang="python">
+<pre>
+collection.add(
+    documents=texts,
+    metadatas=[{                                   # 元数据：之后可以过滤、展示
+        'product_id': pid, 'title': title, 'category': category, 'price': price,
+    } for pid, title, category, price in zip(
+        products_df['product_id'], products_df['title'],
+        products_df['category'], products_df['price']
+    )],
+    ids=[pid for pid in products_df['product_id']]  # 每条记录必须有唯一 ID
+)
+
+query = "camera for taking professional looking photos"
+results = collection.query(query_texts=[query], n_results=3)   # n_results 就是 k-NN 里的 k
+
+for metadata in results['metadatas'][0]:
+    print(f"{metadata['product_id']}: {metadata['title']}")
+</pre>
+</div>
+
+<div class="code" data-lang="text">
+<pre>
+E003: Canon Professional DSLR Camera Kit
+E016: Nikon DSLR 24.2MP Camera
+E007: 4K Drone with Camera
+</pre>
+</div>
+
+<p>前两个是专业相机，第三个是带高画质相机的无人机 —— 查询里根本没出现 “DSLR” 或 “Canon”，但意思对上了。</p>
+
+<div class="box tip">
+  <div class="t">&#128161; 思考题</div>
+  <p>Embedding 模型的输入上限比 LLM 小得多。如果某个商品的标题 + 描述超出上限怎么办？想想有哪些缩短文本的办法（第 8 章的分块是答案之一）。</p>
+</div>
+
+<p>向量数据库也支持熟悉的增删改查：<code>add</code>、<code>update</code>、<code>upsert</code>（有则更新、无则创建）、<code>delete</code>。</p>
+
+<h2 id="recommend">实战二：推荐引擎</h2>
+
+<p>既然每个 embedding 都“懂”商品的意思，那么拿用户<strong>买过的商品</strong>去查询，就能找到他可能感兴趣的<strong>相似商品</strong>。</p>
+
+<div class="cards">
+  <div class="card"><h4>简单</h4><p>不用训练机器学习模型，直接用预训练 embedding。</p></div>
+  <div class="card"><h4>可解释</h4><p>能清楚看到推荐和哪件已购商品最相似。</p></div>
+  <div class="card"><h4>灵活</h4><p>新商品、新类别直接加入，<strong>无需重新训练</strong>。</p></div>
+  <div class="card"><h4>可打分</h4><p>相关性 = 相似度 + 类别等业务规则。</p></div>
+</div>
+
+<div class="code" data-lang="python">
+<pre>
+from dataclasses import dataclass, field
+from typing import List
+
+@dataclass                                   # 自动生成 __init__、__repr__、__eq__
+class Product:
+    product_id: str
+    title: str
+    category: str
+    description: str
+    price: float
+
+    def title_and_description(self) -&gt; str:
+        return f"{self.title} {self.description}"
+
+@dataclass
+class PurchaseHistory:
+    products: List[Product] = field(default_factory=list)   # 每个实例都有自己的新列表
+
+    def has_purchased_product(self, product_id: str) -&gt; bool:
+        return any(product.product_id == product_id for product in self.products)
+
+    def get_purchase_descriptions(self) -&gt; List[str]:
+        return [product.title_and_description() for product in self.products]
+</pre>
+</div>
+
+<div class="box eg">
+  <div class="t">&#128073; <code>@dataclass</code> vs Pydantic</div>
+  <p>Pydantic 模型会做校验，适合和外部系统打交道；<code>@dataclass</code> 是 Python 自带的简单“数据容器”，自动生成构造器等样板方法，适合内部使用。</p>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 250" role="img" aria-label="推荐流程：用已购商品描述查询，多取几条，去掉已购商品，同类别加分，按分数排序">
+  <rect class="bx-a" x="20" y="30" width="150" height="70" rx="10"/>
+  <text class="ttl on-a" x="95" y="56" text-anchor="middle">已购商品</text>
+  <text class="sm" x="95" y="76" text-anchor="middle">降噪耳机、</text><text class="sm" x="95" y="92" text-anchor="middle">登山包</text>
+  <path class="ln" d="M172 65 H212" marker-end="url(#ar)"/>
+  <rect class="bx-b" x="214" y="30" width="160" height="70" rx="10"/>
+  <text class="ttl on-b" x="294" y="56" text-anchor="middle">① 向量查询</text>
+  <text class="sm" x="294" y="76" text-anchor="middle">n_results = 3 +</text><text class="sm" x="294" y="92" text-anchor="middle">已购数量（多取几条）</text>
+  <path class="ln" d="M376 65 H416" marker-end="url(#ar)"/>
+  <rect class="bx-r" x="418" y="30" width="150" height="70" rx="10"/>
+  <text class="ttl on-r" x="493" y="56" text-anchor="middle">② 去掉已购</text>
+  <text class="sm" x="493" y="76" text-anchor="middle">买过的一定最相似，</text><text class="sm" x="493" y="92" text-anchor="middle">要排除</text>
+  <path class="ln" d="M570 65 H610" marker-end="url(#ar)"/>
+  <rect class="bx-g" x="612" y="30" width="128" height="70" rx="10"/>
+  <text class="ttl on-g" x="676" y="56" text-anchor="middle">③ 类别加成</text>
+  <text class="sm" x="676" y="76" text-anchor="middle">同类别</text><text class="sm" x="676" y="92" text-anchor="middle">+0.7</text>
+  <path class="ln" d="M676 102 V140 H540" marker-end="url(#ar)"/>
+  <rect class="bx-p" x="330" y="120" width="208" height="60" rx="10"/>
+  <text class="ttl on-p" x="434" y="146" text-anchor="middle">④ 按分数排序</text>
+  <text class="sm" x="434" y="166" text-anchor="middle">分数越低越相关</text>
+  <text class="mono" x="380" y="214" text-anchor="middle">relevance_score = 距离 + category_bonus</text>
+  <text class="sm" x="380" y="236" text-anchor="middle">这其实是一种“重排序（re-ranking）”，第 8 章会深入</text>
+</svg>
+<figcaption>图 7-12　基于购买历史的推荐</figcaption>
+</figure>
+
+<div class="code" data-lang="python" data-file="part3/vector_databases/product_recommender.py（节选）">
+<pre>
+def get_recommendations(self, purchase_history: PurchaseHistory,
+                        n_recommendations: int = 3,
+                        same_category_weight: float = 0.7) -&gt; List[Product]:
+    if not purchase_history.products:
+        return []
+
+    results = self.collection.query(
+        query_texts=purchase_history.get_purchase_descriptions(),
+        n_results=n_recommendations + len(purchase_history)    # 多取：已购商品会排在最前
+    )
+
+    recommendations = []
+    for idx, metadata in enumerate(results['metadatas'][0]):
+        product_id = metadata['product_id']
+
+        if purchase_history.has_purchased_product(product_id):  # 跳过已购
+            continue
+
+        category_bonus = same_category_weight if any(           # 同类别加分
+            p.category == metadata['category'] for p in purchase_history.products
+        ) else 0
+
+        product = self.find_product(product_id)
+        product.relevance_score = results['distances'][0][idx] + category_bonus
+        recommendations.append(product)
+
+        if len(recommendations) &gt;= n_recommendations:
+            break
+
+    recommendations.sort(key=lambda x: x.relevance_score)       # 分数越低越相关
+    return recommendations
+</pre>
+</div>
+
+<h3>元数据过滤</h3>
+
+<p>
+  纯相似度只是故事的一部分。真实推荐还要考虑用户的其他信息 —— 比如别给住在市中心、从不买户外用品的人推荐登山靴。
+  <code>where</code> 过滤器的用法很像 SQL 的 WHERE：
+</p>
+
+<div class="code" data-lang="python" data-file="part3/vector_databases/product_recommender_with_filter.py（节选）">
+<pre>
+purchase_categories = [product.category for product in purchase_history.products]
+
+results = self.collection.query(
+    query_texts=purchase_history.get_purchase_descriptions(),
+    n_results=n_recommendations,
+    where={"category": {"$in": purchase_categories}}   # 只在用户买过的类别里找
+)
+</pre>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 150" role="img" aria-label="先用 where 过滤元数据缩小范围，再在剩下的记录里做向量相似度搜索">
+  <rect class="bx" x="20" y="40" width="190" height="70" rx="10"/>
+  <text class="ttl" x="115" y="68" text-anchor="middle">全部商品</text><text class="sm" x="115" y="88" text-anchor="middle">Electronics + Apparel</text>
+  <path class="ln" d="M212 75 H262" marker-end="url(#ar)"/>
+  <polygon class="bx-g" points="264,40 400,40 370,110 294,110"/>
+  <text class="mono on-g" x="332" y="66" text-anchor="middle">where</text><text class="sm" x="332" y="84" text-anchor="middle">category ∈</text><text class="sm" x="332" y="100" text-anchor="middle">已购类别</text>
+  <path class="ln" d="M402 75 H452" marker-end="url(#ar)"/>
+  <rect class="bx-b" x="454" y="40" width="130" height="70" rx="10"/>
+  <text class="ttl on-b" x="519" y="68" text-anchor="middle">向量相似度</text><text class="sm" x="519" y="88" text-anchor="middle">在剩下的里找</text>
+  <path class="ln" d="M586 75 H630" marker-end="url(#ar)"/>
+  <rect class="bx-a" x="632" y="48" width="108" height="54" rx="10"/><text class="ttl on-a" x="686" y="80" text-anchor="middle">推荐结果</text>
+</svg>
+<figcaption>图 7-13　元数据过滤 + 向量搜索</figcaption>
+</figure>
+
+<div class="tw"><table>
+  <tr><th>类型</th><th>操作符</th><th>例子</th></tr>
+  <tr><td>逻辑</td><td><code>$and</code>、<code>$or</code></td><td>Electronics <strong>且</strong>低于 $100</td></tr>
+  <tr><td>比较</td><td><code>$eq</code>、<code>$gt</code>、<code>$lt</code></td><td>价格大于 50</td></tr>
+  <tr><td>集合</td><td><code>$in</code>、<code>$nin</code></td><td>类别属于 [books, games]</td></tr>
+</table></div>
+
+<p>还可以用 <code>where_document</code> 按文档内容过滤，Chroma 也支持把全文搜索和向量搜索结合起来。</p>
+
+<h2 id="summary">小结</h2>
+
+<div class="tw"><table>
+  <tr><th>主题</th><th>要点</th></tr>
+  <tr><td>语义检索</td><td>向量嵌入让搜索基于<strong>含义</strong>而不是字面关键词</td></tr>
+  <tr><td>Chroma + SBERT</td><td><code>all-MiniLM-L6-v2</code> 生成 embedding，Chroma 负责存储和高效 ANN 查询</td></tr>
+  <tr><td>元数据</td><td>把商品属性存为元数据，用于过滤和展示</td></tr>
+  <tr><td>推荐</td><td>购买历史 embedding + 类别加权 + 距离 → 排序推荐</td></tr>
+  <tr><td>模型名</td><td>参数量、pt/it、qat/量化、gguf、distill……一眼读懂模型</td></tr>
+  <tr><td>ENN vs ANN</td><td>用效率换绝对正确性</td></tr>
+</table></div>
+
+<div class="exercise">
+  <h3>动手练习</h3>
+  <ol>
+    <li>安装 Chroma 和 Sentence Transformers，为一小批文本建一个 collection，试几个语义搜索。</li>
+    <li>拿同一张商品表，分别写 SQL 全文搜索和向量搜索，比较结果，讨论各自擅长的场景。</li>
+    <li>扩展推荐器：在元数据里加入品牌，给同品牌商品加分，观察推荐结果的变化。</li>
+    <li>改造示例：基于用户<strong>正在浏览</strong>的商品做推荐；为新加入的商品自动推荐类别。</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

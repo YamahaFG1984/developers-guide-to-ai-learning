@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI 开发者指南 · 给写代码的人的 AI 实战课</title>
+<meta name="description" content="《The Developer's Guide to AI》中文图解学习笔记：LLM、提示工程、向量数据库与 RAG、微调、Agent 与 MCP。">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="0">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<div class="hero">
+  <span class="chapter-eyebrow">面向初学者的 14 章图解教程</span>
+  <h1>AI 开发者指南：给写代码的人的 AI 实战课</h1>
+  <p class="sub">
+    这是《The Developer's Guide to AI: A Field Guide for the Working Developer》
+    （Jacob Orshalick、Jerry M. Reghunadh、Danny Thompson 著，No Starch Press）的中文学习笔记，
+    每一章都配有大量图解，并对应本仓库 <code>part1/</code>～<code>part5/</code> 的可运行代码。
+    你不需要成为数据科学家 —— 用你已经会的语言，通过 API 和 SDK 把预训练模型接进自己的应用。
+  </p>
+  <p style="margin-top:14px">
+    <span class="pill">LLM</span><span class="pill">Ollama</span><span class="pill">FastAPI</span>
+    <span class="pill">提示工程</span><span class="pill">结构化输出</span><span class="pill">Chroma</span>
+    <span class="pill">RAG</span><span class="pill">Hugging Face</span><span class="pill">LoRA</span>
+    <span class="pill">smolagents</span><span class="pill">MCP</span>
+  </p>
+</div>
+
+<h2 id="chef">核心比喻：做 AI 厨师，而不是 AI 建筑师</h2>
+
+<p>
+  训练一个大模型要花几十万到几百万美元，那是“AI 建筑师”的工作。我们是<strong>AI 厨师</strong>：
+  挑选合适的<strong>原料</strong>（预训练模型、RAG、微调），用恰当的<strong>技法</strong>（提示工程、工具调用）把它们组合起来，做出解决真实问题的菜。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 250" role="img" aria-label="AI 厨师的原料和技法：原料包括预训练模型、RAG、微调；技法包括提示工程和工具调用；最终做出解决真实问题的应用">
+  <text class="ttl on-b" x="130" y="24" text-anchor="middle">原料</text>
+  <rect class="bx-b" x="30" y="36" width="200" height="40" rx="8"/><text class="lbl" x="130" y="61" text-anchor="middle">&#129302; 预训练模型（LLM）</text>
+  <rect class="bx-b" x="30" y="86" width="200" height="40" rx="8"/><text class="lbl" x="130" y="111" text-anchor="middle">&#128218; RAG（你的数据）</text>
+  <rect class="bx-b" x="30" y="136" width="200" height="40" rx="8"/><text class="lbl" x="130" y="161" text-anchor="middle">&#127919; 微调（专属技能）</text>
+
+  <text class="ttl on-p" x="380" y="24" text-anchor="middle">技法</text>
+  <rect class="bx-p" x="280" y="56" width="200" height="40" rx="8"/><text class="lbl" x="380" y="81" text-anchor="middle">&#9997; 提示工程</text>
+  <rect class="bx-p" x="280" y="116" width="200" height="40" rx="8"/><text class="lbl" x="380" y="141" text-anchor="middle">&#128295; 工具调用 / Agent</text>
+
+  <path class="ln" d="M232 106 H276"/><path class="ln" d="M482 106 H526" marker-end="url(#ar)"/>
+  <rect class="bx-a" x="528" y="56" width="212" height="100" rx="14"/>
+  <text class="ttl on-a" x="634" y="92" text-anchor="middle">&#127869; 解决真实问题</text>
+  <text class="sm" x="634" y="116" text-anchor="middle">客服机器人、文档问答、</text>
+  <text class="sm" x="634" y="134" text-anchor="middle">邮件分类、自动跟进……</text>
+  <text class="sm" x="380" y="214" text-anchor="middle">这本书教你：什么时候用哪种原料、怎么组合、代价是什么</text>
+  <text class="sm" x="380" y="234" text-anchor="middle">以及同样重要的 —— 什么时候<tspan font-weight="700">不该</tspan>用 AI</text>
+</svg>
+<figcaption>图 0-1　AI 厨师的厨房</figcaption>
+</figure>
+
+<h2 id="map">全书路线图：四层策略金字塔</h2>
+
+<p>当 LLM 开箱即用的效果不够好时，按从上到下的顺序尝试。越往下越贵、越慢，但也越精确：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 300" role="img" aria-label="四层策略金字塔：提示工程、上下文工程、微调、自建模型">
+  <polygon class="bx-g" points="380,16 452,78 308,78"/>
+  <text class="ttl on-g" x="380" y="66" text-anchor="middle">提示工程</text>
+  <polygon class="bx-b" points="308,84 452,84 522,146 238,146"/>
+  <text class="ttl on-b" x="380" y="122" text-anchor="middle">上下文工程 / RAG</text>
+  <polygon class="bx-p" points="238,152 522,152 592,214 168,214"/>
+  <text class="ttl on-p" x="380" y="190" text-anchor="middle">微调</text>
+  <polygon class="bx-d" points="168,220 592,220 640,282 120,282"/>
+  <text class="ttl" x="380" y="258" text-anchor="middle">自建模型（本书不涉及）</text>
+  <text class="sm" x="476" y="52">← 第二部分 · 第 4–6 章</text>
+  <text class="sm" x="540" y="120">← 第三部分 · 第 7–8 章</text>
+  <text class="sm" x="610" y="188">← 第四部分 · 第 9–11 章</text>
+  <text class="sm on-a" x="20" y="36">便宜 · 简单 · 灵活</text>
+  <path class="ln-a" d="M60 46 V262" marker-end="url(#ar-a)"/>
+  <text class="sm on-a" x="20" y="286">昂贵 · 精确</text>
+</svg>
+<figcaption>图 0-2　永远从金字塔顶开始；第五部分的 Agent 则是在这一切之上，让 AI 能“行动”</figcaption>
+</figure>
+
+<h2 id="decide">该用哪个方案？</h2>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 340" role="img" aria-label="决策树：传统代码能可靠解决就别用 LLM；需要语言理解时，按知识来源和任务类型选择提示工程、RAG、微调或 Agent">
+  <rect class="bx" x="270" y="10" width="220" height="40" rx="10"/>
+  <text class="ttl" x="380" y="35" text-anchor="middle">你的问题是……</text>
+
+  <path class="ln" d="M300 52 L120 90" marker-end="url(#ar)"/>
+  <rect class="bx-r" x="20" y="92" width="200" height="56" rx="10"/>
+  <text class="sm" x="120" y="114" text-anchor="middle">传统代码就能可靠解决？</text>
+  <text class="ttl on-r" x="120" y="136" text-anchor="middle">别用 LLM</text>
+
+  <path class="ln" d="M460 52 L560 90" marker-end="url(#ar)"/>
+  <rect class="bx" x="440" y="92" width="300" height="40" rx="10"/>
+  <text class="sm" x="590" y="117" text-anchor="middle">需要语言理解或复杂模式识别？</text>
+
+  <path class="ln" d="M470 134 L110 190" marker-end="url(#ar)"/>
+  <path class="ln" d="M540 134 L290 190" marker-end="url(#ar)"/>
+  <path class="ln" d="M620 134 L470 190" marker-end="url(#ar)"/>
+  <path class="ln" d="M700 134 L650 190" marker-end="url(#ar)"/>
+
+  <rect class="bx-g" x="20" y="192" width="170" height="120" rx="10"/>
+  <text class="sm" x="105" y="216" text-anchor="middle">知识在模型</text>
+  <text class="sm" x="105" y="234" text-anchor="middle">训练数据里</text>
+  <text class="ttl on-g" x="105" y="270" text-anchor="middle">提示工程</text>
+  <text class="sm" x="105" y="292" text-anchor="middle">第 4–6 章</text>
+
+  <rect class="bx-b" x="205" y="192" width="170" height="120" rx="10"/>
+  <text class="sm" x="290" y="216" text-anchor="middle">需要私有或</text>
+  <text class="sm" x="290" y="234" text-anchor="middle">最新数据</text>
+  <text class="ttl on-b" x="290" y="270" text-anchor="middle">RAG</text>
+  <text class="sm" x="290" y="292" text-anchor="middle">第 7–8 章</text>
+
+  <rect class="bx-p" x="390" y="192" width="170" height="120" rx="10"/>
+  <text class="sm" x="475" y="216" text-anchor="middle">需要模型本身更强</text>
+  <text class="sm" x="475" y="234" text-anchor="middle">或遵守特定格式</text>
+  <text class="ttl on-p" x="475" y="270" text-anchor="middle">微调（LoRA）</text>
+  <text class="sm" x="475" y="292" text-anchor="middle">第 9–11 章</text>
+
+  <rect class="bx-a" x="575" y="192" width="165" height="120" rx="10"/>
+  <text class="sm" x="657" y="216" text-anchor="middle">需要 AI 自主规划、</text>
+  <text class="sm" x="657" y="234" text-anchor="middle">操作外部系统</text>
+  <text class="ttl on-a" x="657" y="270" text-anchor="middle">Agent + MCP</text>
+  <text class="sm" x="657" y="292" text-anchor="middle">第 12–14 章</text>
+</svg>
+<figcaption>图 0-3　遇到需求时，先用这张图定位该读哪一部分</figcaption>
+</figure>
+
+<h2 id="story">贯穿全书的故事</h2>
+
+<p>一个创业团队的演进，正好对应了本书的五个部分：</p>
+
+<div class="tw"><table>
+  <tr><th>阶段</th><th>遇到的问题</th><th>解决办法</th><th>对应部分</th></tr>
+  <tr><td>1</td><td>客服问题洪水般涌来</td><td>第一次简单的 LLM API 调用</td><td>第一部分</td></tr>
+  <tr><td>2</td><td>LLM 不了解他们的产品</td><td>更好的 prompt、角色、结构化输出</td><td>第二部分</td></tr>
+  <tr><td>3</td><td>需要接入公司知识库</td><td>RAG + 向量数据库</td><td>第三部分</td></tr>
+  <tr><td>4</td><td>收件箱混乱，需要按公司特有类别分类</td><td>微调分类模型</td><td>第四部分</td></tr>
+  <tr><td>5</td><td>分好类了，但跟进仍靠人工</td><td>Agent + 工具 + MCP</td><td>第五部分</td></tr>
+</table></div>
+
+<div class="box key">
+  <div class="t">&#128273; 一句话总结全书</div>
+  <p><strong>先给 AI 记忆，再给 AI 能动性。作为回报，AI 给了团队自由。</strong></p>
+</div>
+
+<h2 id="toc">全部章节</h2>
+<div id="toc-grid"></div>
+
+<h2 id="setup">环境准备（一次性）</h2>
+
+<div class="cards">
+  <div class="card"><span class="ic">&#129433;</span><h4>Ollama</h4><p>第一到三部分用它在本地跑 Llama 3.2 和 embedding 模型，免费。</p></div>
+  <div class="card"><span class="ic">&#128013;</span><h4>Python 3.13</h4><p>第 3 章起的主要语言。每个 Part 建议一个独立的虚拟环境。</p></div>
+  <div class="card"><span class="ic">&#128994;</span><h4>Node.js</h4><p>第 2 章的服务和各部分的 React 前端。</p></div>
+  <div class="card"><span class="ic">&#128273;</span><h4>API key</h4><p>第五部分需要 Gemini API key；费用管理器示例需要 MongoDB（可选）。</p></div>
+</div>
+
+<div class="code" data-lang="bash">
+<pre>
+# Ollama：https://ollama.com
+ollama serve                        # 终端 1：启动服务
+ollama run llama3.2                 # 终端 2：3B 模型，约需 6GB 内存
+ollama run llama3.2:1b              # 低配替代：1B 模型，约需 2GB 内存
+ollama pull mxbai-embed-large       # 第三部分 RAG 需要的 embedding 模型
+
+# Python 虚拟环境（每个 Part 一个）
+pyenv install 3.13.7
+pyenv virtualenv 3.13.7 developers-guide-to-ai-part1
+pyenv activate developers-guide-to-ai-part1
+python -m pip install -r requirements.txt
+</pre>
+</div>
+
+<h2 id="how">怎么用这套教程</h2>
+
+<ul>
+  <li><strong>每章配合代码跑一遍。</strong>看懂概念不等于会用，尤其是 prompt —— 同一个 prompt 在不同模型上的表现差异，只有亲手试才有感觉。</li>
+  <li><strong>把每章末尾的练习当必做题。</strong>它们往往指向书里没展开但很关键的细节。</li>
+  <li><strong>第四部分需要耐心。</strong>微调在 CPU 上可能跑好几个小时，可以先读懂 notebook，再决定是否完整跑一遍。</li>
+  <li><strong>右下角的按钮可以切换深浅色。</strong>小屏幕上点左上角的菜单按钮打开目录。</li>
+</ul>
+
+<div class="box note">
+  <div class="t">&#128218; 官方资源</div>
+  <ul>
+    <li>本书主页：<a href="https://nostarch.com/developers-guide-to-AI">nostarch.com/developers-guide-to-AI</a></li>
+    <li>代码仓库：<a href="https://github.com/jorshali/developers-guide-to-ai">github.com/jorshali/developers-guide-to-ai</a></li>
+    <li>问题反馈：<a href="https://github.com/jorshali/developers-guide-to-ai/issues">GitHub Issues</a>（被采纳的反馈会让你的名字出现在下一版致谢里）</li>
+  </ul>
+</div>
+
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

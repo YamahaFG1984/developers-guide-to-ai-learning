@@ -1,0 +1,710 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 11 章 · 微调实战 — AI 开发者指南</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="11">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 11 章 · 动手微调</span>
+<h1>微调实战</h1>
+<p class="lede">
+  数据准备好了，开始训练。这一章我们微调两个模型：一个小巧的分类模型 <strong>DistilBERT</strong>，和一个小型 LLM <strong>Qwen2.5-0.5B</strong>。
+  你会亲眼看到微调让它们的准确率从及格线附近跳到 93%～100%。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>用 zero-shot 测试建立<strong>基线</strong></li>
+    <li>用 Hugging Face <code>Trainer</code> 完整微调一个分类模型</li>
+    <li>理解 <strong>PEFT</strong> 和 <strong>LoRA</strong>：为什么只训练很少的参数也行</li>
+    <li>掌握 <strong>chat template</strong>，把数据变成 LLM 能理解的格式</li>
+    <li>用 <code>peft</code> + <code>trl</code> 的 <code>SFTTrainer</code> 微调 LLM 并评估</li>
+  </ul>
+</div>
+
+<div class="box note">
+  <div class="t">&#128194; 对应代码（<code>part4/</code> 下的 Notebook）</div>
+  <ul>
+    <li><code>02.zeroShot.ipynb</code> —— zero-shot 基线</li>
+    <li><code>03-finetune-classificationModel.ipynb</code> —— 微调 DistilBERT</li>
+    <li><code>04-chat-examples.ipynb</code> —— chat template</li>
+    <li><code>05-finetune-dataset.ipynb</code> / <code>06-finetune-llm.ipynb</code> / <code>07-test-ft-llm.ipynb</code> —— 构建数据集、LoRA 微调 Qwen、评估</li>
+  </ul>
+</div>
+
+<div class="box warn">
+  <div class="t">&#9888; 先打个预防针：微调很耗时</div>
+  <p>纯 CPU 机器上可能要跑好几个小时。书中代码在 Mac mini（M4，10 核 CPU、16GB 内存、10 核 GPU）上测试，LLM 训练约 4.5 小时。机器不适合长时间满载的话，先读懂 notebook 再决定是否完整跑一遍。</p>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="baseline">先建立基线</h2>
+
+<p>
+  微调之前，先要知道模型<strong>什么都没学时</strong>表现如何 —— 这就是<strong>基线（baseline）</strong>。有了基线，才能衡量微调到底带来了多少提升。
+  我们用 zero-shot（prompt 里不给任何示例）测试三个模型：要微调的两个小模型，外加一个强大的商业模型 Google Gemini 作为参照。
+</p>
+
+<div class="prompt">
+  <div class="h">zero-shot prompt</div>
+  <div class="b">Classify the following email summaries into the following categories -
+
+* India Bank
+* India School
+* US Bank
+* US School
+
+The classification label should come before the summary test followed by a "-"
+
+&lt;-- list of email summaries from the test dataset ---&gt;</div>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 180" role="img" aria-label="zero-shot 基线准确率：Gemini 100%，DistilBERT 69%，Qwen2.5-0.5B 58%">
+  <text class="ttl" x="20" y="50">Google Gemini</text>
+  <rect class="fill-b" x="260" y="34" width="440" height="24" rx="4"/><text class="sm wt" x="690" y="51" text-anchor="end">100%</text>
+  <text class="ttl" x="20" y="94">DistilBERT（66M 参数）</text>
+  <rect class="fill-f" x="260" y="78" width="304" height="24" rx="4"/><text class="lbl" x="572" y="95">69%</text>
+  <text class="ttl" x="20" y="138">Qwen2.5-0.5B-Instruct</text>
+  <rect class="fill-f" x="260" y="122" width="255" height="24" rx="4"/><text class="lbl" x="523" y="139">58%</text>
+  <text class="sm" x="260" y="172">zero-shot 准确率（测试集）</text>
+</svg>
+<figcaption>图 11-1　基线：大模型开箱即用就很强，两个小模型只有及格线水平</figcaption>
+</figure>
+
+<h2 id="distilbert">微调分类模型：DistilBERT</h2>
+
+<p>先看全貌，再逐段看代码：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 230" role="img" aria-label="DistilBERT 微调流程：加载数据集，分词，动态填充，加载 4 分类模型，Trainer 训练并每轮评估，保存最佳模型">
+  <rect class="bx-b" x="10"  y="30" width="115" height="66" rx="10"/><text class="lbl on-b" x="67" y="56" text-anchor="middle">数据集</text><text class="sm" x="67" y="76" text-anchor="middle">第 10 章产出</text>
+  <rect class="bx-g" x="137" y="30" width="115" height="66" rx="10"/><text class="lbl on-g" x="194" y="56" text-anchor="middle">分词</text><text class="sm" x="194" y="76" text-anchor="middle">dataset.map()</text>
+  <rect class="bx-g" x="264" y="30" width="115" height="66" rx="10"/><text class="lbl on-g" x="321" y="56" text-anchor="middle">动态填充</text><text class="sm" x="321" y="76" text-anchor="middle">DataCollator</text>
+  <rect class="bx-p" x="391" y="30" width="115" height="66" rx="10"/><text class="lbl on-p" x="448" y="56" text-anchor="middle">加载模型</text><text class="sm" x="448" y="76" text-anchor="middle">num_labels=4</text>
+  <rect class="bx-a" x="518" y="30" width="115" height="66" rx="10"/><text class="lbl on-a" x="575" y="56" text-anchor="middle">Trainer</text><text class="sm" x="575" y="76" text-anchor="middle">trainer.train()</text>
+  <rect class="bx" x="645" y="30" width="105" height="66" rx="10"/><text class="lbl" x="697" y="56" text-anchor="middle">保存</text><text class="sm" x="697" y="76" text-anchor="middle">save_model()</text>
+  <path class="ln" d="M127 63 H133" marker-end="url(#ar)"/><path class="ln" d="M254 63 H260" marker-end="url(#ar)"/>
+  <path class="ln" d="M381 63 H387" marker-end="url(#ar)"/><path class="ln" d="M508 63 H514" marker-end="url(#ar)"/><path class="ln" d="M635 63 H641" marker-end="url(#ar)"/>
+
+  <text class="ttl" x="20" y="140">Trainer 内部（num_train_epochs=3）：</text>
+  <rect class="bx-b" x="20" y="156" width="140" height="32" rx="6"/><text class="sm" x="90" y="177" text-anchor="middle">第 1 轮：训练集</text>
+  <rect class="bx-a" x="166" y="156" width="70" height="32" rx="6"/><text class="sm" x="201" y="177" text-anchor="middle">验证</text>
+  <rect class="bx-b" x="250" y="156" width="140" height="32" rx="6"/><text class="sm" x="320" y="177" text-anchor="middle">第 2 轮：训练集</text>
+  <rect class="bx-a" x="396" y="156" width="70" height="32" rx="6"/><text class="sm" x="431" y="177" text-anchor="middle">验证</text>
+  <rect class="bx-b" x="480" y="156" width="140" height="32" rx="6"/><text class="sm" x="550" y="177" text-anchor="middle">第 3 轮：训练集</text>
+  <rect class="bx-a" x="626" y="156" width="70" height="32" rx="6"/><text class="sm" x="661" y="177" text-anchor="middle">验证</text>
+  <text class="sm on-g" x="380" y="214" text-anchor="middle">每轮结束都在验证集上评估并保存检查点，最后加载表现最好的那个（load_best_model_at_end）</text>
+</svg>
+<figcaption>图 11-2　分类模型微调全流程</figcaption>
+</figure>
+
+<h3>1. 导入与分词</h3>
+
+<div class="code" data-lang="python">
+<pre>
+from transformers import AutoModelForSequenceClassification   # 分类模型
+from transformers import AutoTokenizer                        # 分词器
+from transformers import TrainingArguments, Trainer           # 训练流程
+from transformers import DataCollatorWithPadding              # 组装批次
+from datasets import load_from_disk
+import numpy as np
+import evaluate                                               # 标准评估指标
+
+model_id = "distilbert/distilbert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(model_id)           # 分词器必须和模型配套！
+
+def preprocess_function(examples):
+    return tokenizer(examples["text"], truncation=True)       # 太长的截断
+
+dataset = load_from_disk("./data/mail_dataset_labeled")
+tokenized_dataset = dataset.map(preprocess_function, batched=True)   # 批量处理，高效
+</pre>
+</div>
+
+<p><code>map</code> 会给每条数据加上 token ID 和 <strong>attention mask（注意力掩码）</strong>。</p>
+
+<h3>2. 动态填充与注意力掩码</h3>
+
+<p>Transformer 要求同一批（batch）里的序列<strong>长度相同</strong>，但邮件摘要长短不一。<code>DataCollatorWithPadding</code> 会把每批里较短的序列用特殊的 padding token 补到该批最长的长度：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 210" role="img" aria-label="动态填充：短序列用 PAD 补齐到本批最长长度，attention mask 用 1 标记真实 token，用 0 标记填充">
+  <text class="ttl" x="20" y="22">一个 batch（3 条邮件）</text>
+  <g>
+    <rect class="fill-b" x="120" y="36" width="60" height="24" rx="3"/><rect class="fill-b" x="184" y="36" width="60" height="24" rx="3"/><rect class="fill-b" x="248" y="36" width="60" height="24" rx="3"/><rect class="fill-b" x="312" y="36" width="60" height="24" rx="3"/><rect class="fill-b" x="376" y="36" width="60" height="24" rx="3"/>
+    <rect class="fill-g" x="120" y="68" width="60" height="24" rx="3"/><rect class="fill-g" x="184" y="68" width="60" height="24" rx="3"/><rect class="fill-g" x="248" y="68" width="60" height="24" rx="3"/>
+    <rect class="bx-d" x="312" y="68" width="60" height="24" rx="3"/><rect class="bx-d" x="376" y="68" width="60" height="24" rx="3"/>
+    <rect class="fill-a" x="120" y="100" width="60" height="24" rx="3"/><rect class="fill-a" x="184" y="100" width="60" height="24" rx="3"/><rect class="fill-a" x="248" y="100" width="60" height="24" rx="3"/><rect class="fill-a" x="312" y="100" width="60" height="24" rx="3"/>
+    <rect class="bx-d" x="376" y="100" width="60" height="24" rx="3"/>
+    <text class="sm" x="342" y="85" text-anchor="middle">[PAD]</text><text class="sm" x="406" y="85" text-anchor="middle">[PAD]</text><text class="sm" x="406" y="117" text-anchor="middle">[PAD]</text>
+  </g>
+  <text class="sm" x="20" y="53">邮件 1（最长）</text><text class="sm" x="20" y="85">邮件 2</text><text class="sm" x="20" y="117">邮件 3</text>
+
+  <text class="ttl" x="470" y="22">attention mask</text>
+  <text class="mono" x="470" y="53">[1, 1, 1, 1, 1]</text>
+  <text class="mono" x="470" y="85">[1, 1, 1, <tspan class="on-r">0, 0</tspan>]</text>
+  <text class="mono" x="470" y="117">[1, 1, 1, 1, <tspan class="on-r">0</tspan>]</text>
+  <text class="sm" x="20" y="160">填充到“本批最长”而不是“全局最长”，所以叫动态填充 —— 省内存、省计算。</text>
+  <text class="sm" x="20" y="182">attention mask 告诉模型：1 = 真实内容要处理，0 = 填充物请忽略。</text>
+</svg>
+<figcaption>图 11-3　动态填充 + 注意力掩码</figcaption>
+</figure>
+
+<div class="code" data-lang="python">
+<pre>
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+
+accuracy = evaluate.load("accuracy")
+
+def compute_metrics(eval_pred):
+    predictions, labels = eval_pred                   # Trainer 评估时传进来
+    predictions = np.argmax(predictions, axis=1)      # 取概率最高的类别 ID
+    return accuracy.compute(predictions=predictions, references=labels)
+</pre>
+</div>
+
+<h3>3. 加载模型、设置超参数</h3>
+
+<div class="code" data-lang="python">
+<pre>
+label2id = {"IN_Bank": 0, "IN_School": 1, "US_Bank": 2, "US_School": 3}
+id2label = {0: "IN_Bank", 1: "IN_School", 2: "US_Bank", 3: "US_School"}
+
+model = AutoModelForSequenceClassification.from_pretrained(
+    model_id, num_labels=4, id2label=id2label, label2id=label2id)   # 告诉它有 4 个类别
+
+training_args = TrainingArguments(
+    output_dir="trainer_output/my_mail_classifier",
+    learning_rate=2e-5,
+    per_device_train_batch_size=8,
+    per_device_eval_batch_size=8,
+    num_train_epochs=3,
+    weight_decay=0.01,
+    eval_strategy="epoch",
+    save_strategy="epoch",
+    load_best_model_at_end=True,
+    push_to_hub=False,
+    report_to="none",
+)
+</pre>
+</div>
+
+<p>控制训练过程的这些设置叫<strong>超参数（hyperparameters）</strong>：</p>
+
+<div class="tw"><table>
+  <tr><th>参数</th><th>一句话</th></tr>
+  <tr><td><code>learning_rate</code></td><td>每次更新参数时“迈多大步”。太大会学乱，太小学得慢</td></tr>
+  <tr><td><code>per_device_*_batch_size</code></td><td>每个设备一次处理几条。越大越吃内存，有时更快</td></tr>
+  <tr><td><code>num_train_epochs</code></td><td>把整个训练集完整过几遍</td></tr>
+  <tr><td><code>weight_decay</code></td><td>正则化：惩罚过大的权重，<strong>防止过拟合</strong></td></tr>
+  <tr><td><code>eval_strategy</code> / <code>save_strategy</code></td><td><code>"epoch"</code>：每轮结束评估一次、保存一次</td></tr>
+  <tr><td><code>load_best_model_at_end</code></td><td>训练完加载验证集上表现最好的检查点</td></tr>
+  <tr><td><code>push_to_hub</code> / <code>report_to</code></td><td>不上传到 Hugging Face Hub、不向外部服务报告指标</td></tr>
+</table></div>
+
+<h3>4. 训练、保存、评估</h3>
+
+<div class="code" data-lang="python">
+<pre>
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=tokenized_dataset["train"],
+    eval_dataset=tokenized_dataset["validation"],
+    tokenizer=tokenizer,
+    data_collator=data_collator,
+    compute_metrics=compute_metrics,
+)
+
+trainer.train()                                  # 一行代码启动整个微调
+
+trainer.save_model("models/my_mail_classifier")  # 保存，以后直接加载使用
+</pre>
+</div>
+
+<div class="box warn">
+  <div class="t">&#9888; 评估时换 pipeline 任务</div>
+  <p>微调后的模型要用 <code>text-classification</code> pipeline，而不是 <code>zero-shot-classification</code>。后者用于分类模型<strong>没训练过</strong>的类别；现在模型已经“认识”这些类别了。</p>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 120" role="img" aria-label="DistilBERT 微调前 69%，微调后 100%">
+  <text class="ttl" x="20" y="44">DistilBERT 微调前</text>
+  <rect class="fill-f" x="220" y="28" width="332" height="24" rx="4"/><text class="lbl" x="560" y="45">69%</text>
+  <text class="ttl" x="20" y="88">DistilBERT 微调后</text>
+  <rect class="fill-g" x="220" y="72" width="480" height="24" rx="4"/><text class="sm wt" x="690" y="89" text-anchor="end">100% &#127881;</text>
+</svg>
+<figcaption>图 11-4　微调后，这个只有 6600 万参数的小模型追平了 Gemini</figcaption>
+</figure>
+
+<h2 id="why-llm">微调 LLM 之前：几个概念</h2>
+
+<div class="terms">
+  <div class="term"><b>模型权重</b><i>model weights</i>模型内部的数值参数。训练就是在调整它们，它们共同代表了模型学到的模式和知识。</div>
+  <div class="term"><b>灾难性遗忘</b><i>catastrophic forgetting</i>在新任务上训练后，模型突然忘了原来会的东西 —— 新知识覆盖了旧知识。</div>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 190" role="img" aria-label="提示工程改变的是输入，模型权重不变；微调改变的是模型权重本身">
+  <text class="ttl on-b" x="190" y="24" text-anchor="middle">提示工程：改输入</text>
+  <rect class="bx-b" x="30" y="50" width="120" height="56" rx="8"/><text class="lbl on-b" x="90" y="76" text-anchor="middle">精心设计</text><text class="lbl on-b" x="90" y="94" text-anchor="middle">的 prompt</text>
+  <path class="ln-b" d="M152 78 H200" marker-end="url(#ar-b)"/>
+  <rect class="bx" x="202" y="40" width="140" height="76" rx="10"/><text class="ttl" x="272" y="72" text-anchor="middle">模型</text><text class="sm" x="272" y="94" text-anchor="middle">权重 &#128274; 不变</text>
+  <text class="sm" x="190" y="146" text-anchor="middle">成本低、不需要训练数据</text>
+  <text class="sm" x="190" y="164" text-anchor="middle">复杂任务可能不够、控制有限</text>
+
+  <path class="ln-d" d="M380 16 V180"/>
+
+  <text class="ttl on-p" x="570" y="24" text-anchor="middle">微调：改模型</text>
+  <rect class="bx" x="410" y="50" width="120" height="56" rx="8"/><text class="lbl" x="470" y="76" text-anchor="middle">普通的</text><text class="lbl" x="470" y="94" text-anchor="middle">prompt</text>
+  <path class="ln" d="M532 78 H580" marker-end="url(#ar)"/>
+  <rect class="bx-p" x="582" y="40" width="150" height="76" rx="10"/><text class="ttl on-p" x="657" y="72" text-anchor="middle">模型</text><text class="sm on-p" x="657" y="94" text-anchor="middle">权重 &#9998; 被更新</text>
+  <text class="sm" x="570" y="146" text-anchor="middle">性能提升大、学到更深的知识</text>
+  <text class="sm" x="570" y="164" text-anchor="middle">成本高、要数据、小心灾难性遗忘</text>
+</svg>
+<figcaption>图 11-5　提示工程 vs 微调</figcaption>
+</figure>
+
+<div class="vs">
+  <div class="old"><div class="h">用提示工程，当你</div>
+    <ul style="margin:10px 16px 10px 0"><li>资源或时间有限</li><li>任务简单、需要快速上线</li><li>没有训练数据或微调能力</li></ul>
+  </div>
+  <div class="new"><div class="h">用微调，当你</div>
+    <ul style="margin:10px 16px 10px 0"><li>需要最高性能</li><li>任务复杂，要学深层知识</li><li>有数据和资源，要适配特定领域</li></ul>
+  </div>
+</div>
+
+<h2 id="lora">PEFT 与 LoRA：只训练一小部分</h2>
+
+<p>
+  DistilBERT 用的是<strong>常规（全量）微调</strong>：所有参数都参与更新。对大模型来说，这极其昂贵，需要更多数据防止过拟合，还容易灾难性遗忘。
+  <strong>PEFT（参数高效微调）</strong>换了个思路：<strong>冻结原模型，只加一点点新参数来训练</strong>。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 220" role="img" aria-label="全量微调更新所有参数；PEFT 冻结原模型，只训练少量新增的 adapter 参数">
+  <text class="ttl" x="190" y="22" text-anchor="middle">全量微调</text>
+  <g>
+    <rect class="fill-r" x="60" y="40" width="260" height="30" rx="4"/>
+    <rect class="fill-r" x="60" y="76" width="260" height="30" rx="4"/>
+    <rect class="fill-r" x="60" y="112" width="260" height="30" rx="4"/>
+    <rect class="fill-r" x="60" y="148" width="260" height="30" rx="4"/>
+    <text class="sm wt" x="190" y="60" text-anchor="middle">第 1 层 &#9998;</text><text class="sm wt" x="190" y="96" text-anchor="middle">第 2 层 &#9998;</text>
+    <text class="sm wt" x="190" y="132" text-anchor="middle">第 3 层 &#9998;</text><text class="sm wt" x="190" y="168" text-anchor="middle">…… &#9998;</text>
+  </g>
+  <text class="sm" x="190" y="204" text-anchor="middle">几十亿参数全部要训练、要存储</text>
+
+  <path class="ln-d" d="M380 16 V210"/>
+
+  <text class="ttl" x="570" y="22" text-anchor="middle">PEFT（如 LoRA）</text>
+  <g>
+    <rect class="fill-f" x="420" y="40" width="220" height="30" rx="4"/>
+    <rect class="fill-f" x="420" y="76" width="220" height="30" rx="4"/>
+    <rect class="fill-f" x="420" y="112" width="220" height="30" rx="4"/>
+    <rect class="fill-f" x="420" y="148" width="220" height="30" rx="4"/>
+    <text class="sm" x="530" y="60" text-anchor="middle">第 1 层 &#128274;</text><text class="sm" x="530" y="96" text-anchor="middle">第 2 层 &#128274;</text>
+    <text class="sm" x="530" y="132" text-anchor="middle">第 3 层 &#128274;</text><text class="sm" x="530" y="168" text-anchor="middle">…… &#128274;</text>
+    <rect class="fill-g" x="646" y="44" width="30" height="22" rx="3"/><rect class="fill-g" x="646" y="80" width="30" height="22" rx="3"/>
+    <rect class="fill-g" x="646" y="116" width="30" height="22" rx="3"/><rect class="fill-g" x="646" y="152" width="30" height="22" rx="3"/>
+    <text class="sm on-g" x="684" y="96">adapter</text><text class="sm on-g" x="684" y="112">可训练</text>
+  </g>
+  <text class="sm" x="570" y="204" text-anchor="middle">原模型冻结，只训练几百万甚至几千个参数</text>
+</svg>
+<figcaption>图 11-6　全量微调 vs PEFT</figcaption>
+</figure>
+
+<div class="tw"><table>
+  <tr><th></th><th>PEFT</th><th>全量微调</th></tr>
+  <tr><td>什么时候用</td><td>数据或算力有限；要快速训练和部署；想省存储；<strong>新任务和预训练任务相似</strong></td><td>数据和算力充足；要最大性能；<strong>新任务和预训练任务差别很大</strong></td></tr>
+  <tr><td>优点</td><td>更快更省；数据少时更不易过拟合；存储小；<strong>缓解灾难性遗忘</strong></td><td>数据充足时提升显著；实现简单</td></tr>
+  <tr><td>缺点</td><td>有时达不到全量微调的效果；要仔细选 target modules</td><td>昂贵耗时；需要更多数据；可能灾难性遗忘</td></tr>
+</table></div>
+
+<div class="box eg">
+  <div class="t">&#128663; LoRA 的比喻：给引擎加一块调校芯片</div>
+  <p>
+    想按自己的驾驶习惯调校汽车引擎，不必拆开重造，只需要装一块小芯片，就能切换 eco / normal / sport 模式，引擎本身完全不动。
+    <strong>LoRA（Low-Rank Adaptation）</strong>就是这块芯片：在现有模型旁边加少量可调参数，实现高效微调。
+  </p>
+</div>
+
+<h3>LoRA 为什么能省那么多参数</h3>
+
+<p>
+  LoRA 保持原来的大权重矩阵<strong>冻结</strong>，在旁边注入两个“瘦长”的小矩阵来学习变化量。最关键的设置是 <strong>rank（秩）<code>r</code></strong>，它决定小矩阵有多“宽”：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 290" role="img" aria-label="LoRA 数学：原矩阵 1000×1000 共 100 万参数冻结，旁边加 1000×r 和 r×1000 两个小矩阵，r=5 时只有 1 万个可训练参数">
+  <rect class="bx-d" x="40" y="40" width="200" height="200" rx="4"/>
+  <text class="ttl" x="140" y="132" text-anchor="middle">W  &#128274;</text>
+  <text class="sm" x="140" y="152" text-anchor="middle">1000 × 1000</text>
+  <text class="sm" x="140" y="170" text-anchor="middle">= 1,000,000 参数</text>
+  <text class="sm" x="140" y="262" text-anchor="middle">原始权重：冻结不动</text>
+
+  <text class="ttl" x="275" y="146" text-anchor="middle">+</text>
+
+  <rect class="bx-g" x="310" y="40" width="26" height="200" rx="3"/>
+  <text class="ttl on-g" x="323" y="30" text-anchor="middle">A</text>
+  <text class="sm" x="323" y="262" text-anchor="middle">1000 × r</text>
+  <text class="ttl" x="360" y="146" text-anchor="middle">×</text>
+  <rect class="bx-g" x="384" y="40" width="200" height="26" rx="3"/>
+  <text class="ttl on-g" x="484" y="30" text-anchor="middle">B</text>
+  <text class="sm" x="484" y="84" text-anchor="middle">r × 1000</text>
+
+  <rect class="bx-a" x="384" y="120" width="356" height="120" rx="10"/>
+  <text class="ttl on-a" x="400" y="146">可训练参数（r = 5）</text>
+  <text class="mono" x="400" y="172">= 1000 × 5 + 5 × 1000</text>
+  <text class="mono" x="400" y="194">= 10,000</text>
+  <text class="sm on-g" x="400" y="222">只有原来的 1%！</text>
+  <text class="sm" x="562" y="262" text-anchor="middle">r 越小越省，r 越大适配能力越强</text>
+</svg>
+<figcaption>图 11-7　低秩分解：用两个小矩阵的乘积，近似表示大矩阵需要的变化</figcaption>
+</figure>
+
+<p>LoRA 把这个技巧用在模型的许多关键层上。所有层加起来，可训练参数能从几十亿降到几百万。</p>
+
+<div class="cards">
+  <div class="card"><span class="ic">&#9889;</span><h4>更快更便宜</h4><p>训练时间只是全量微调的一小部分，GPU 小时费用也更少。</p></div>
+  <div class="card"><span class="ic">&#128187;</span><h4>降低硬件门槛</h4><p>内存需求大减，消费级硬件也能微调大模型。</p></div>
+  <div class="card"><span class="ic">&#128230;</span><h4>便携</h4><p>产出一个 10–100MB 的小 adapter 文件，而不是一个 20GB 的新模型。一个基座可以挂多个 adapter。</p></div>
+  <div class="card"><span class="ic">&#127942;</span><h4>质量不打折</h4><p>效果可与全量微调相当，有时更好。</p></div>
+</div>
+
+<h2 id="template">Chat Template：LLM 的“专属格式”</h2>
+
+<p>
+  第 6 章我们用 <code>messages</code> 数组和模型对话。但模型实际看到的不是 JSON，而是一段带<strong>特殊 token</strong>的文本。
+  每个模型训练时用的格式都不同，这个格式叫 <strong>chat template（指令模板）</strong>。<strong>用错模板，模型就可能理解错你的输入。</strong>
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 330" role="img" aria-label="同一组 messages 经过 apply_chat_template，Qwen 和 Llama 生成完全不同的文本格式">
+  <rect class="bx" x="20" y="100" width="210" height="130" rx="10"/>
+  <text class="sm" x="32" y="120">messages</text>
+  <text class="sm on-a" x="32" y="146">system: You are a helpful</text>
+  <text class="sm on-a" x="32" y="162">geography assistant…</text>
+  <text class="sm on-b" x="32" y="188">user: What is the capital</text>
+  <text class="sm on-b" x="32" y="204">of France?</text>
+  <text class="sm on-g" x="32" y="222">assistant: …Paris.</text>
+  <path class="ln" d="M232 140 L290 70" marker-end="url(#ar)"/>
+  <path class="ln" d="M232 190 L290 250" marker-end="url(#ar)"/>
+  <text class="mono on-a" x="125" y="252" text-anchor="middle">apply_chat_template()</text>
+
+  <rect class="bx-p" x="292" y="12" width="448" height="138" rx="10"/>
+  <text class="ttl on-p" x="306" y="32">Qwen</text>
+  <text class="mono" style="font-size:11px" x="306" y="56"><tspan class="on-r">&lt;|im_start|&gt;</tspan>system</text>
+  <text class="mono" style="font-size:11px" x="306" y="74">You are a helpful geography assistant…<tspan class="on-r">&lt;|im_end|&gt;</tspan></text>
+  <text class="mono" style="font-size:11px" x="306" y="94"><tspan class="on-r">&lt;|im_start|&gt;</tspan>user</text>
+  <text class="mono" style="font-size:11px" x="306" y="112">What is the capital of France?<tspan class="on-r">&lt;|im_end|&gt;</tspan></text>
+  <text class="mono" style="font-size:11px" x="306" y="132"><tspan class="on-r">&lt;|im_start|&gt;</tspan>assistant …Paris.<tspan class="on-r">&lt;|im_end|&gt;</tspan></text>
+
+  <rect class="bx-b" x="292" y="164" width="448" height="156" rx="10"/>
+  <text class="ttl on-b" x="306" y="184">Llama</text>
+  <text class="mono" style="font-size:11px" x="306" y="206"><tspan class="on-r">&lt;|begin_of_text|&gt;&lt;|start_header_id|&gt;</tspan>system<tspan class="on-r">&lt;|end_header_id|&gt;</tspan></text>
+  <text class="mono" style="font-size:11px" x="306" y="224">Cutting Knowledge Date: December 2023</text>
+  <text class="mono" style="font-size:11px" x="306" y="242">You are a helpful geography assistant…<tspan class="on-r">&lt;|eot_id|&gt;</tspan></text>
+  <text class="mono" style="font-size:11px" x="306" y="262"><tspan class="on-r">&lt;|start_header_id|&gt;</tspan>user<tspan class="on-r">&lt;|end_header_id|&gt;</tspan></text>
+  <text class="mono" style="font-size:11px" x="306" y="280">What is the capital of France?<tspan class="on-r">&lt;|eot_id|&gt;</tspan></text>
+  <text class="mono" style="font-size:11px" x="306" y="300"><tspan class="on-r">&lt;|start_header_id|&gt;</tspan>assistant…</text>
+</svg>
+<figcaption>图 11-8　同样的对话，不同模型的“方言”完全不同（红色为特殊 token）</figcaption>
+</figure>
+
+<div class="code" data-lang="python" data-file="part4/04-chat-examples.ipynb（节选）">
+<pre>
+tokenizer = AutoTokenizer.from_pretrained(model_id)
+print(tokenizer.get_chat_template())        # 查看模型的模板（它本身就是一个 Jinja 模板）
+
+prompt = [
+    {"role": "system", "content": "You are a helpful geography assistant. You are able to answer questions about the world."},
+    {"role": "user", "content": "What is the capital of France?"},
+    {"role": "assistant", "content": "The capital of France is Paris."}
+]
+
+print(tokenizer.apply_chat_template(prompt, tokenize=False))   # 看格式化后的文本
+</pre>
+</div>
+
+<ul>
+  <li><code>tokenize=False</code>：返回格式化后的<strong>文本</strong>，方便查看模型期望的格式</li>
+  <li><code>tokenize=True</code>：格式化后直接分词，返回 <strong>token ID</strong></li>
+  <li><code>return_tensors="pt"</code>：返回 PyTorch 张量，可以直接喂给模型</li>
+</ul>
+
+<div class="code" data-lang="python">
+<pre>
+prompt = [
+    {"role": "system", "content": "You are a helpful geography assistant. ..."},
+    {"role": "user", "content": "What is the capital of France?"}
+]
+tokenized_input = tokenizer.apply_chat_template(prompt, tokenize=True, return_tensors="pt")
+output_text = model.generate(tokenized_input, max_new_tokens=50)          # 最多生成 50 个新 token
+print(tokenizer.decode(output_text[0], skip_special_tokens=True))         # 去掉特殊 token
+# ... The capital of France is Paris.
+</pre>
+</div>
+
+<h3>让回答以指定前缀开头：continue_final_message</h3>
+
+<p>想让模型的回答以 “GA: ” 开头？直觉是在最后加一条 assistant 消息 <code>{"role": "assistant", "content": "GA: "}</code>。但结果是模型输出 “GA:” 就停了 —— 因为模板在这条消息后面加了<strong>回合结束</strong>标记。</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 200" role="img" aria-label="默认情况下最后一条消息后有结束标记，模型认为回合结束；continue_final_message 去掉结束标记，模型接着写">
+  <text class="ttl on-r" x="20" y="24">默认</text>
+  <rect class="bx" x="20" y="36" width="720" height="44" rx="8"/>
+  <text class="mono" x="32" y="63">…&lt;|im_start|&gt;assistant GA: <tspan class="on-r">&lt;|im_end|&gt;</tspan></text>
+  <text class="sm on-r" x="440" y="63">← 有结束标记：“这轮说完了”，模型不会接着写</text>
+
+  <text class="ttl on-g" x="20" y="116">continue_final_message=True</text>
+  <rect class="bx-g" x="20" y="128" width="720" height="44" rx="8"/>
+  <text class="mono" x="32" y="155">…&lt;|im_start|&gt;assistant GA: <tspan class="on-g">09000 Paris, Île-de-France, France</tspan></text>
+  <text class="sm on-g" x="520" y="155">← 从中断处直接续写</text>
+  <text class="sm" x="380" y="192" text-anchor="middle">把“轮流对话”模式切换成“文本续写”模式</text>
+</svg>
+<figcaption>图 11-9　控制模型从哪里开始生成</figcaption>
+</figure>
+
+<div class="code" data-lang="python">
+<pre>
+tokenized_input = tokenizer.apply_chat_template(
+    prompt,                                  # 最后一条是 {"role": "assistant", "content": "GA: "}
+    tokenize=True,
+    return_tensors="pt",
+    continue_final_message=True,             # 关键：不加回合结束标记
+)
+</pre>
+</div>
+
+<h2 id="llm-dataset">构建 LLM 微调数据集</h2>
+
+<p>第 10 章的数据集是 <code>text + label</code>。LLM 要学的是“对话”，所以要把每条数据转成套好 chat template 的文本。<strong>训练集和测试集的格式不一样</strong>：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 250" role="img" aria-label="训练和验证数据包含完整的 system、user、assistant 三条消息；测试数据只有 system 和 user，并加上生成提示让模型自己回答">
+  <rect class="bx-b" x="20" y="20" width="350" height="200" rx="12"/>
+  <text class="ttl on-b" x="36" y="44">训练 / 验证：带标准答案</text>
+  <rect class="bx-a" x="36" y="58" width="318" height="34" rx="6"/><text class="sm" x="46" y="80">system: 你是邮件分类助手…</text>
+  <rect class="bx" x="36" y="100" width="318" height="34" rx="6"/><text class="sm" x="46" y="122">user: Categorise: Your OTP for txn…</text>
+  <rect class="bx-g" x="36" y="142" width="318" height="34" rx="6"/><text class="sm on-g" x="46" y="164">assistant: Category: IN_Bank</text>
+  <text class="sm" x="36" y="204">模型照着这些“范文”学怎么回答</text>
+
+  <rect class="bx-p" x="390" y="20" width="350" height="200" rx="12"/>
+  <text class="ttl on-p" x="406" y="44">测试：不给答案</text>
+  <rect class="bx-a" x="406" y="58" width="318" height="34" rx="6"/><text class="sm" x="416" y="80">system: 你是邮件分类助手…</text>
+  <rect class="bx" x="406" y="100" width="318" height="34" rx="6"/><text class="sm" x="416" y="122">user: Categorise: Your OTP for txn…</text>
+  <rect class="bx-d" x="406" y="142" width="318" height="34" rx="6"/><text class="sm" x="416" y="164">assistant: ▌ ← 模型自己生成</text>
+  <text class="sm" x="406" y="204">add_generation_prompt=True；label 单独保留用于打分</text>
+</svg>
+<figcaption>图 11-10　训练数据是“题目 + 答案”，测试数据只有“题目”</figcaption>
+</figure>
+
+<div class="code" data-lang="python" data-file="part4/05-finetune-dataset.ipynb（节选）">
+<pre>
+label_names = ["IN_Bank", "IN_School", "US_Bank", "US_School"]
+
+def convert_to_training_messages(dataset):                   # 训练 / 验证用
+    messages = [
+        [
+            {"role": "system",    "content": message_system},
+            {"role": "user",      "content": f"Categorise: {ds['text']}"},
+            {"role": "assistant", "content": f"Category: {label_names[ds['label']]}"}
+        ] for ds in dataset
+    ]
+    texts = [tokenizer.apply_chat_template(m, tokenize=False) for m in messages]
+    return {"text": texts}
+
+def convert_to_prompting_messages(dataset):                  # 测试用
+    data = []
+    for ds in dataset:
+        message = [
+            {"role": "system", "content": message_system},
+            {"role": "user",   "content": f"Categorise: {ds['text']}"}
+        ]
+        chat_message = tokenizer.apply_chat_template(
+            message, tokenize=False,
+            add_generation_prompt=True,                      # 末尾加上 assistant 开头，等模型作答
+        )
+        data.append({"text": chat_message, "label": ds["label"]})
+    return {"items": data}
+
+dataset = load_from_disk("./data/mail_dataset_labeled")
+ds_train = Dataset.from_dict(convert_to_training_messages(dataset["train"]))   # 字典 → Dataset
+ds_val   = Dataset.from_dict(convert_to_training_messages(dataset["validation"]))
+ds_test  = Dataset.from_dict(convert_to_prompting_messages(dataset["test"]))
+
+DatasetDict({"train": ds_train, "validation": ds_val, "test": ds_test}) \
+    .save_to_disk("./data/llm_mail_dataset")
+</pre>
+</div>
+
+<h2 id="train-llm">用 LoRA 训练 LLM</h2>
+
+<ol class="steps">
+  <li><strong>定义 LoRA 配置</strong><code>LoraConfig</code></li>
+  <li><strong>把配置应用到模型</strong><code>get_peft_model</code></li>
+  <li><strong>创建训练参数</strong><code>SFTConfig</code></li>
+  <li><strong>训练</strong><code>SFTTrainer.train()</code></li>
+</ol>
+
+<h3>1. LoraConfig</h3>
+
+<div class="code" data-lang="python" data-file="part4/06-finetune-llm.ipynb（节选）">
+<pre>
+from peft import LoraConfig
+
+lora_config = LoraConfig(
+    r=4,                       # 秩：adapter 有多“宽”
+    lora_alpha=8,              # 缩放因子，实际缩放 = lora_alpha / r
+    lora_dropout=0,            # adapter 上的 dropout，防过拟合
+    bias="none",               # bias 参数保持冻结
+    task_type="CAUSAL_LM",     # 因果语言模型：根据前文预测下一个 token
+    target_modules=["q_proj", "k_proj", "v_proj", "o_proj",       # 注意力层
+                    "gate_proj", "up_proj", "down_proj"],         # 前馈网络层
+    modules_to_save=["lm_head"]                                   # 输出层也一起训练
+)
+</pre>
+</div>
+
+<p><code>target_modules</code> 里的名字是什么？一个 Transformer 由很多层堆叠而成，每层有两个主要部件：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 300" role="img" aria-label="Transformer 层结构：注意力机制包含 q_proj、k_proj、v_proj、o_proj；前馈网络包含 gate_proj、up_proj、down_proj；LoRA adapter 注入这些子层">
+  <rect class="bx-d" x="20" y="20" width="720" height="210" rx="14"/>
+  <text class="ttl" x="36" y="44">一个 Transformer 层（会重复几十次）</text>
+
+  <rect class="bx-b" x="40" y="60" width="330" height="150" rx="12"/>
+  <text class="ttl on-b" x="56" y="84">注意力机制 Attention</text>
+  <text class="sm" x="56" y="104">看句子里的其他词，判断哪些和当前词最相关</text>
+  <rect class="bx" x="56" y="120" width="68" height="30" rx="5"/><text class="mono" x="90" y="140" text-anchor="middle">q_proj</text>
+  <rect class="bx" x="132" y="120" width="68" height="30" rx="5"/><text class="mono" x="166" y="140" text-anchor="middle">k_proj</text>
+  <rect class="bx" x="208" y="120" width="68" height="30" rx="5"/><text class="mono" x="242" y="140" text-anchor="middle">v_proj</text>
+  <rect class="bx" x="284" y="120" width="68" height="30" rx="5"/><text class="mono" x="318" y="140" text-anchor="middle">o_proj</text>
+  <text class="sm" x="56" y="176">query / key / value 投影 + 输出投影</text>
+  <text class="sm" x="56" y="194">LoRA 在这里 → 调整模型“关注什么”</text>
+
+  <path class="ln" d="M372 135 H398" marker-end="url(#ar)"/>
+
+  <rect class="bx-p" x="400" y="60" width="320" height="150" rx="12"/>
+  <text class="ttl on-p" x="416" y="84">前馈网络 FFN</text>
+  <text class="sm" x="416" y="104">对每个词的表示单独做进一步变换</text>
+  <rect class="bx" x="416" y="120" width="90" height="30" rx="5"/><text class="mono" x="461" y="140" text-anchor="middle">gate_proj</text>
+  <rect class="bx" x="514" y="120" width="90" height="30" rx="5"/><text class="mono" x="559" y="140" text-anchor="middle">up_proj</text>
+  <rect class="bx" x="612" y="120" width="90" height="30" rx="5"/><text class="mono" x="657" y="140" text-anchor="middle">down_proj</text>
+  <text class="sm" x="416" y="176">up 扩展维度、down 收缩维度</text>
+  <text class="sm" x="416" y="194">LoRA 在这里 → 调整模型“怎么加工信息”</text>
+
+  <g>
+    <rect class="fill-g" x="80" y="114" width="20" height="8" rx="2"/><rect class="fill-g" x="156" y="114" width="20" height="8" rx="2"/>
+    <rect class="fill-g" x="232" y="114" width="20" height="8" rx="2"/><rect class="fill-g" x="308" y="114" width="20" height="8" rx="2"/>
+    <rect class="fill-g" x="451" y="114" width="20" height="8" rx="2"/><rect class="fill-g" x="549" y="114" width="20" height="8" rx="2"/>
+    <rect class="fill-g" x="647" y="114" width="20" height="8" rx="2"/>
+  </g>
+  <rect class="fill-g" x="40" y="248" width="20" height="10" rx="2"/>
+  <text class="sm" x="68" y="257">= 注入的 LoRA adapter（可训练），其余全部冻结</text>
+  <rect class="bx-a" x="440" y="240" width="300" height="40" rx="8"/>
+  <text class="sm on-a" x="590" y="258" text-anchor="middle">lm_head（输出层）：直接决定输出概率，</text>
+  <text class="sm on-a" x="590" y="274" text-anchor="middle">通过 modules_to_save 一起训练</text>
+</svg>
+<figcaption>图 11-11　LoRA 注入到哪里</figcaption>
+</figure>
+
+<h3>2–4. 应用配置并训练</h3>
+
+<div class="code" data-lang="python">
+<pre>
+from peft import get_peft_model
+from trl import SFTTrainer, SFTConfig
+
+peft_model = get_peft_model(model, lora_config)   # 注入 adapter + 冻结原参数
+
+training_args = SFTConfig(
+    output_dir="trainer_output/my_mail_classifier_llm",
+    report_to="none",
+    overwrite_output_dir=True,
+    do_train=True,
+    learning_rate=2e-4,
+    num_train_epochs=3,
+    bf16=False,                                   # 关闭混合精度，用完整 float32 训练
+    fp16=False,
+)
+
+trainer = SFTTrainer(                             # trl 库的监督微调训练器
+    model=peft_model,
+    args=training_args,
+    train_dataset=dataset["train"],
+    eval_dataset=dataset["validation"],
+)
+
+trainer.train()
+trainer.save_model("models/my_llm_mail_classifier")   # 保存配置 + LoRA adapter 权重
+</pre>
+</div>
+
+<ul>
+  <li><code>get_peft_model</code> 返回的模型用起来和普通 Hugging Face 模型一样，但训练时只有 LoRA adapter 里的少量参数会更新。</li>
+  <li><code>SFTTrainer</code> 来自 <code>trl</code>（Transformer Reinforcement Learning）库，专为监督微调等“后训练”设计，和 LoRA 配合很方便。</li>
+  <li>训练时间从几分钟到几小时不等，GPU 远快于 CPU。书中配置约 <strong>4.5 小时</strong>。</li>
+</ul>
+
+<h2 id="results">成绩单</h2>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 240" role="img" aria-label="最终成绩：DistilBERT 从 69% 到 100%，Qwen 从 58% 到 93%，Gemini 基线 100%">
+  <path class="ln" d="M160 200 H740"/>
+  <path class="ln-d" d="M160 40 H740"/><text class="sm" x="152" y="44" text-anchor="end">100%</text>
+  <path class="ln-d" d="M160 120 H740"/><text class="sm" x="152" y="124" text-anchor="end">50%</text>
+  <text class="sm" x="152" y="204" text-anchor="end">0</text>
+
+  <rect class="fill-f" x="200" y="90" width="60" height="110" rx="3"/><text class="sm" x="230" y="84" text-anchor="middle">69%</text>
+  <rect class="fill-g" x="266" y="40" width="60" height="160" rx="3"/><text class="sm on-g" x="296" y="34" text-anchor="middle">100%</text>
+  <text class="ttl" x="263" y="222" text-anchor="middle">DistilBERT</text>
+
+  <rect class="fill-f" x="400" y="107" width="60" height="93" rx="3"/><text class="sm" x="430" y="101" text-anchor="middle">58%</text>
+  <rect class="fill-g" x="466" y="51" width="60" height="149" rx="3"/><text class="sm on-g" x="496" y="45" text-anchor="middle">93.02%</text>
+  <text class="ttl" x="463" y="222" text-anchor="middle">Qwen2.5-0.5B</text>
+
+  <rect class="fill-b" x="630" y="40" width="60" height="160" rx="3"/><text class="sm on-b" x="660" y="34" text-anchor="middle">100%</text>
+  <text class="ttl" x="660" y="222" text-anchor="middle">Gemini（参照）</text>
+
+  <rect class="fill-f" x="20" y="60" width="14" height="14" rx="2"/><text class="sm" x="40" y="72">微调前</text>
+  <rect class="fill-g" x="20" y="84" width="14" height="14" rx="2"/><text class="sm" x="40" y="96">微调后</text>
+</svg>
+<figcaption>图 11-12　两个小模型经过微调，都逼近甚至追平了大型商业模型</figcaption>
+</figure>
+
+<h2 id="summary">小结</h2>
+
+<div class="tw"><table>
+  <tr><th>阶段</th><th>要点</th></tr>
+  <tr><td>建立基线</td><td>微调前先测 zero-shot，知道提升空间，设定清晰目标</td></tr>
+  <tr><td>数据准备</td><td>分类模型只需分词；LLM 需要套用各自的 chat template</td></tr>
+  <tr><td>高效适配</td><td>LoRA（PEFT 的一种）冻结原模型、只训练小 adapter，大幅降低成本</td></tr>
+  <tr><td>执行与评估</td><td>用 <code>transformers</code>、<code>peft</code>、<code>trl</code> 完成训练，用测试集证明价值</td></tr>
+</table></div>
+
+<div class="exercise">
+  <h3>动手练习</h3>
+  <ol>
+    <li><strong>调超参数</strong>：改 <code>learning_rate</code>、<code>num_train_epochs</code> 或 LoRA 的 <code>r</code>，观察训练速度、内存和最终准确率的变化。</li>
+    <li><strong>换基座模型</strong>：从 Hugging Face Hub 选一个 Gemma 或 Llama 的变体，跑同样的流程，对比不同架构的表现。</li>
+    <li><strong>不只看准确率</strong>：计算 precision、recall、F1，看看模型是否偏向某些类别。</li>
+    <li><strong>试试 prompt 格式</strong>：改 LLM 训练数据里的 system prompt 或 user 指令，小改动可能带来明显的提升。</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

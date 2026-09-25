@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 13 章 · 构建自主智能体 — AI 开发者指南</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="13">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 13 章 · 第一个 Agent</span>
+<h1>构建自主智能体</h1>
+<p class="lede">
+  上一章讲了 Agent 是什么，这一章亲手做一个。我们用 Hugging Face 的 <strong>smolagents</strong> 框架，
+  配上 Google Gemini，让 Agent 自己上网搜索、读网页，找出几家公司的季度营收并做成对比表 —— 总共不到 20 行代码。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>理解为什么“步骤不固定”的任务特别适合 Agent</li>
+    <li>用 smolagents + LiteLLM + Gemini 搭起第一个 Agent</li>
+    <li>弄懂 <code>CodeAgent</code> 的关键参数：<code>tools</code>、<code>add_base_tools</code>、<code>max_steps</code></li>
+    <li>理解 Agent 的“思考 → 写代码调用工具 → 观察结果”循环</li>
+    <li>体会提示工程对 Agent 依然重要</li>
+  </ul>
+</div>
+
+<div class="box note">
+  <div class="t">&#128194; 对应代码：<code>part5/building-your-first-agent/</code></div>
+  <ul>
+    <li><code>01-helloAgents.py</code> —— 第一个 Agent</li>
+    <li><code>02.findingEarningsReport.py</code> —— 多公司财报对比</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="why">为什么自己写，而不用现成平台</h2>
+
+<p>
+  CrewAI、Browser Use、Agent.ai 这类平台是探索 Agent 的好途径。但作为开发者，<strong>理解底层机制、能按需定制 Agent</strong> 才是关键。
+  常见的代码框架有：
+</p>
+
+<div class="cards">
+  <div class="card"><span class="ic">&#129303;</span><h4>smolagents ★ 本书</h4><p>Hugging Face 出品，轻量，Agent 直接写 Python 代码来调用工具。</p></div>
+  <div class="card"><span class="ic">&#128310;</span><h4>Google ADK</h4><p>Google 的 Agent Development Kit。</p></div>
+  <div class="card"><span class="ic">&#9889;</span><h4>FastMCP</h4><p>快速构建 MCP 服务器（第 14 章会用到）。</p></div>
+</div>
+
+<h2 id="task">一个真实的多步任务</h2>
+
+<p>假设你是投资人，想知道关注的几家公司 2024 年第四季度赚了多少钱。听起来简单，实际上每家公司都要：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 250" role="img" aria-label="人工查财报的步骤：搜索、找链接、下载长报告、翻找营收数字，每家公司重复一遍，而且每家报告格式都不一样">
+  <rect class="bx-b" x="20"  y="30" width="160" height="60" rx="10"/><text class="lbl on-b" x="100" y="56" text-anchor="middle">① 上网搜财报</text><text class="sm" x="100" y="76" text-anchor="middle">搜索引擎</text>
+  <rect class="bx-b" x="206" y="30" width="160" height="60" rx="10"/><text class="lbl on-b" x="286" y="56" text-anchor="middle">② 找对链接</text><text class="sm" x="286" y="76" text-anchor="middle">2024 Q4 那一份</text>
+  <rect class="bx-b" x="392" y="30" width="160" height="60" rx="10"/><text class="lbl on-b" x="472" y="56" text-anchor="middle">③ 打开长报告</text><text class="sm" x="472" y="76" text-anchor="middle">几十页 PDF</text>
+  <rect class="bx-b" x="578" y="30" width="162" height="60" rx="10"/><text class="lbl on-b" x="659" y="56" text-anchor="middle">④ 翻找营收数字</text><text class="sm" x="659" y="76" text-anchor="middle">在哪一节？</text>
+  <path class="ln" d="M182 60 H202" marker-end="url(#ar)"/><path class="ln" d="M368 60 H388" marker-end="url(#ar)"/><path class="ln" d="M554 60 H574" marker-end="url(#ar)"/>
+
+  <text class="ttl" x="20" y="130">× 每一家公司</text>
+  <rect class="bx-a" x="20" y="144" width="160" height="36" rx="7"/><text class="sm on-a" x="100" y="167" text-anchor="middle">Amazon</text>
+  <rect class="bx-g" x="200" y="144" width="160" height="36" rx="7"/><text class="sm on-g" x="280" y="167" text-anchor="middle">Google</text>
+  <rect class="bx" x="380" y="144" width="160" height="36" rx="7"/><text class="sm" x="460" y="167" text-anchor="middle">Apple</text>
+  <text class="sm" x="560" y="167">……</text>
+  <rect class="bx-r" x="20" y="196" width="720" height="40" rx="8"/>
+  <text class="sm on-r" x="380" y="221" text-anchor="middle">难点：每家公司的报告格式都不一样，没法写一套固定的步骤 —— 这正是 Agent 大显身手的地方</text>
+</svg>
+<figcaption>图 13-1　步骤多、而且每次都不完全一样的任务，最适合交给 Agent</figcaption>
+</figure>
+
+<h2 id="setup">环境搭建</h2>
+
+<p>建议先建一个新的虚拟环境（<code>venv</code> 或 Conda）。书中基于 Python 3.13.7 和 smolagents 1.22.0：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+pip install smolagents==1.22.0 "smolagents[litellm]" "smolagents[toolkit]"
+</pre>
+</div>
+
+<p>smolagents 通过 <strong>LiteLLM</strong> 连接各家模型（包括 Google Gemini）。从 Google AI Studio 或 Google Cloud 获取 API key，设为环境变量：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+export GEMINI_API_KEY=your_api_key_here     # Linux / macOS
+set GEMINI_API_KEY=your_api_key_here        # Windows
+# 想永久生效：写进 ~/.zshrc / ~/.bashrc，或用 python-dotenv 读 .env 文件
+</pre>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 220" role="img" aria-label="组件关系：你的脚本创建 CodeAgent，CodeAgent 通过 LiteLLMModel 调用 Gemini，并使用搜索、访问网页和 Python 解释器等工具">
+  <rect class="bx" x="20" y="80" width="130" height="60" rx="10"/><text class="lbl" x="85" y="106" text-anchor="middle">你的脚本</text><text class="sm" x="85" y="124" text-anchor="middle">agent.run(任务)</text>
+  <path class="ln" d="M152 110 H198" marker-end="url(#ar)"/>
+  <rect class="bx-a" x="200" y="60" width="170" height="100" rx="12"/>
+  <text class="ttl on-a" x="285" y="88" text-anchor="middle">CodeAgent</text>
+  <text class="sm" x="285" y="110" text-anchor="middle">smolagents</text>
+  <text class="sm" x="285" y="130" text-anchor="middle">max_steps = 5</text>
+  <path class="ln-p" d="M372 90 L450 50" marker-end="url(#ar-p)"/>
+  <rect class="bx-p" x="452" y="14" width="140" height="56" rx="10"/><text class="lbl on-p" x="522" y="38" text-anchor="middle">LiteLLMModel</text><text class="sm" x="522" y="56" text-anchor="middle">统一的模型接口</text>
+  <path class="ln-p" d="M594 42 H628" marker-end="url(#ar-p)"/>
+  <rect class="bx-p" x="630" y="14" width="110" height="56" rx="10"/><text class="lbl on-p" x="685" y="38" text-anchor="middle">Gemini</text><text class="sm" x="685" y="56" text-anchor="middle">2.0 Flash</text>
+
+  <path class="ln-g" d="M372 130 L450 160" marker-end="url(#ar-g)"/>
+  <rect class="bx-g" x="452" y="100" width="288" height="110" rx="10"/>
+  <text class="ttl on-g" x="466" y="122">工具箱 tools</text>
+  <text class="sm" x="466" y="146">&#128269; DuckDuckGoSearchTool —— 网页搜索</text>
+  <text class="sm" x="466" y="168">&#127760; VisitWebpageTool —— 读取网页内容</text>
+  <text class="sm" x="466" y="190">&#128013; Python 解释器 —— 运行 Agent 写的代码</text>
+</svg>
+<figcaption>图 13-2　第一个 Agent 的组成：大脑（Gemini）+ 工具箱 + 调度框架（CodeAgent）</figcaption>
+</figure>
+
+<h2 id="first">第一个 Agent</h2>
+
+<div class="code" data-lang="python" data-file="part5/building-your-first-agent/01-helloAgents.py">
+<pre>
+from smolagents import CodeAgent, LiteLLMModel
+from smolagents import DuckDuckGoSearchTool, VisitWebpageTool
+
+model_id = "gemini/gemini-2.0-flash"
+
+model = LiteLLMModel(                 # 用 LiteLLM 连接 Gemini（读取 GEMINI_API_KEY）
+    model_id=model_id,
+    provider="google",
+)
+
+tools = [
+    DuckDuckGoSearchTool(),           # 网页搜索
+    VisitWebpageTool()                # 访问网页、读取内容
+]
+
+agent = CodeAgent(
+    tools=tools,
+    model=model,
+    add_base_tools=True,              # 再加上默认工具集（搜索 + Python 解释器）
+    verbosity_level=2,                # 打印多少过程信息
+    max_steps=5                       # 最多走 5 步，防止无限运行
+)
+
+message = "Based on Amazon's Q4 2024 earnings report, what is the revenue for the quarter?"
+agent.run(message)
+</pre>
+</div>
+
+<div class="tw"><table>
+  <tr><th>参数</th><th>作用</th></tr>
+  <tr><td><code>tools</code></td><td>分配给 Agent 的工具列表 —— 它能用来完成任务的具体函数或能力</td></tr>
+  <tr><td><code>model</code></td><td>负责推理和写代码的 LLM</td></tr>
+  <tr><td><code>add_base_tools=True</code></td><td>自动加入默认工具：<strong>DuckDuckGo 网页搜索</strong>和 <strong>Python 代码解释器</strong></td></tr>
+  <tr><td><code>verbosity_level</code></td><td>控制运行时打印的信息量，调高能看到每一步的思考和代码</td></tr>
+  <tr><td><code>max_steps=5</code></td><td>最多走 5 步，不管完成没有都停下。<strong>这是防止 Agent 无限循环、无限烧钱的安全阀</strong></td></tr>
+</table></div>
+
+<p>运行后，答案应该是 <strong>$187.8 billion</strong>（或包含这个数字的回答）。</p>
+
+<h3>它是怎么做到的？</h3>
+
+<p>
+  LLM 本身不知道 Amazon 2024 Q4 的营收（训练截止之后，第 1 章的“知识截止”）。所以 Agent 必须像我们一样<strong>去查</strong>。
+  <code>CodeAgent</code> 的特点是：它让 LLM <strong>写一段 Python 代码</strong>来调用工具，执行代码后把结果（观察）喂回给 LLM，再决定下一步：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 360" role="img" aria-label="CodeAgent 的循环：LLM 思考并写 Python 代码调用工具，执行得到观察结果，再次思考，直到调用 final_answer 或达到 max_steps">
+  <rect class="bx" x="20" y="20" width="280" height="40" rx="8"/><text class="sm" x="160" y="45" text-anchor="middle">任务：Amazon 2024 Q4 营收是多少？</text>
+  <path class="ln" d="M160 62 V84" marker-end="url(#ar)"/>
+  <rect class="bx-p" x="20" y="86" width="280" height="56" rx="8"/>
+  <text class="lbl on-p" x="32" y="106">① 思考：我需要搜索最新财报</text>
+  <text class="mono" x="32" y="130">web_search("Amazon Q4 2024 revenue")</text>
+  <path class="ln" d="M302 114 H340" marker-end="url(#ar)"/>
+  <rect class="bx-g" x="342" y="86" width="398" height="56" rx="8"/>
+  <text class="lbl on-g" x="354" y="106">观察：搜索结果列表</text>
+  <text class="sm" x="354" y="128">“Amazon.com Announces Fourth Quarter Results …”</text>
+  <rect class="bx-p" x="20" y="176" width="280" height="56" rx="8"/>
+  <text class="lbl on-p" x="32" y="196">② 思考：打开官方新闻稿确认</text>
+  <text class="mono" x="32" y="220">visit_webpage(news_url)</text>
+  <path class="ln" d="M302 204 H340" marker-end="url(#ar)"/>
+  <rect class="bx-g" x="342" y="176" width="398" height="56" rx="8"/>
+  <text class="lbl on-g" x="354" y="196">观察：网页正文</text>
+  <text class="sm" x="354" y="218">“Net sales increased 10% to $187.8 billion …”</text>
+  <rect class="bx-p" x="20" y="266" width="280" height="56" rx="8"/>
+  <text class="lbl on-p" x="32" y="286">③ 思考：已找到答案</text>
+  <text class="mono" x="32" y="310">final_answer("$187.8 billion")</text>
+  <path class="ln-a" d="M302 294 H340" marker-end="url(#ar-a)"/>
+  <rect class="bx-a" x="342" y="266" width="398" height="56" rx="8"/>
+  <text class="ttl on-a" x="541" y="299" text-anchor="middle">返回给用户 ✓</text>
+
+  <path class="ln-d" d="M541 144 C 560 160, 200 158, 160 172" marker-end="url(#ar)"/>
+  <path class="ln-d" d="M541 234 C 560 250, 200 248, 160 262" marker-end="url(#ar)"/>
+  <text class="sm" x="380" y="348" text-anchor="middle">每一轮的观察结果都会回到 LLM 的上下文里；超过 max_steps 还没完成就强制停止（示意）</text>
+</svg>
+<figcaption>图 13-3　CodeAgent 的“思考 → 写代码调工具 → 观察”循环</figcaption>
+</figure>
+
+<div class="box note">
+  <div class="t">&#9432; 书中的最小版本</div>
+  <p>书中一开始给的是 <code>tools = []</code> 加 <code>add_base_tools=True</code> 的版本 —— 只靠默认工具（DuckDuckGo 搜索 + Python 解释器）也能完成任务。仓库里的版本额外显式加入了 <code>VisitWebpageTool</code>，让 Agent 能直接读网页正文。</p>
+</div>
+
+<div class="box tip">
+  <div class="t">&#129514; 动手实验：拿走工具会怎样？</div>
+  <p>
+    把 <code>add_base_tools=True</code> 去掉，并把 <code>tools</code> 设为空列表，再运行一次。观察 Agent 没有搜索能力时的表现 ——
+    它要么承认不知道，要么凭训练数据“猜”。这直观地说明了：<strong>Agent 获取外部信息的能力，完全来自你给它的工具</strong>。
+  </p>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 150" role="img" aria-label="有工具时 Agent 能查到真实数据；没有工具时只能依赖训练数据，可能过时或编造">
+  <rect class="bx-g" x="20" y="20" width="350" height="110" rx="12"/>
+  <text class="ttl on-g" x="195" y="46" text-anchor="middle">有工具</text>
+  <text class="sm" x="36" y="72">搜索 → 读网页 → 找到官方数字</text>
+  <text class="sm on-g" x="36" y="96">$187.8 billion ✓ 有据可查</text>
+  <rect class="bx-r" x="390" y="20" width="350" height="110" rx="12"/>
+  <text class="ttl on-r" x="565" y="46" text-anchor="middle">没有工具</text>
+  <text class="sm" x="406" y="72">只能靠训练数据（有截止日期）</text>
+  <text class="sm on-r" x="406" y="96">“我无法获取…” 或者编一个数 ✗</text>
+</svg>
+<figcaption>图 13-4　工具就是 Agent 的手和眼睛</figcaption>
+</figure>
+
+<h2 id="prompt">Agent 也需要好的提示</h2>
+
+<p>
+  光有强大的模型还不够。<strong>你怎么描述任务</strong>（也就是给 Agent 设定上下文），对结果同样关键。比较两个版本：
+</p>
+
+<div class="vs">
+  <div class="old"><div class="h">版本 1：普通提问</div>
+    <div class="prompt" style="margin:0;border:none;border-radius:0">
+      <div class="b">Show me the Q4 2024 revenue for Amazon, Google, and Apple</div>
+      <div class="b out">Amazon Q4 2024 Revenue: $187.8 billion,
+Google Q4 2024 Revenue: $96.5 billion,
+Apple Q4 2024 Revenue: $94.9 billion</div>
+    </div>
+  </div>
+  <div class="new"><div class="h">版本 2：要求表格对比</div>
+    <div class="prompt" style="margin:0;border:none;border-radius:0">
+      <div class="b">Show me the Q4 2024 revenue for Amazon, Google and Apple <mark>and compare them in a table.</mark></div>
+      <div class="b out">| Company           | Q4 2024 Revenue |
+| Amazon            | $187.8 billion  |
+| Google (Alphabet) | $96.5 billion   |
+| Apple             | $94.9 billion   |</div>
+    </div>
+  </div>
+</div>
+
+<div class="code" data-lang="python" data-file="part5/building-your-first-agent/02.findingEarningsReport.py">
+<pre>
+from smolagents import CodeAgent, LiteLLMModel
+
+model = LiteLLMModel(model_id="gemini/gemini-2.0-flash", provider="google")
+
+agent = CodeAgent(
+    tools=[],
+    model=model,
+    add_base_tools=True
+)
+
+message = "Show me the Q4 2024 revenue for Amazon, Google and Apple and compare them in a table."
+agent.run(message)
+</pre>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 200" role="img" aria-label="三家公司 2024 年第四季度营收对比：Amazon 1878 亿美元，Google 965 亿美元，Apple 949 亿美元">
+  <text class="ttl" x="20" y="24">Agent 找到的 2024 Q4 营收（十亿美元）</text>
+  <text class="lbl" x="20" y="66">Amazon</text>
+  <rect class="fill-a" x="170" y="50" width="500" height="26" rx="4"/><text class="lbl" x="678" y="68">187.8</text>
+  <text class="lbl" x="20" y="116">Google (Alphabet)</text>
+  <rect class="fill-g" x="170" y="100" width="257" height="26" rx="4"/><text class="lbl" x="435" y="118">96.5</text>
+  <text class="lbl" x="20" y="166">Apple</text>
+  <rect class="fill-b" x="170" y="150" width="253" height="26" rx="4"/><text class="lbl" x="431" y="168">94.9</text>
+</svg>
+<figcaption>图 13-5　一句“做成表格对比”，结果就便于分析了</figcaption>
+</figure>
+
+<p>多公司查询时，Agent 会对每家公司重复“搜索 → 读取”的循环，最后汇总。这正是第 12 章说的<strong>非确定性</strong>：步骤数量和顺序由 Agent 根据情况决定，而不是你事先写死。</p>
+
+<h2 id="summary">小结</h2>
+
+<ul>
+  <li>用 <strong>smolagents</strong> 的 <code>CodeAgent</code> 搭起了第一个 Agent：LLM 写 Python 代码调用工具。</li>
+  <li><code>add_base_tools=True</code> 给了 Agent 网页搜索和 Python 解释器；没有工具，它就查不到训练数据以外的信息。</li>
+  <li><code>max_steps</code> 是防止无限运行的安全阀。</li>
+  <li><strong>提示工程对 Agent 同样关键</strong>：清楚说明想要的输出形式（比如对比表格），结果会好用得多。</li>
+</ul>
+
+<div class="exercise">
+  <h3>动手练习</h3>
+  <ol>
+    <li>调整 <code>max_steps</code>：调小时 Agent 会不会还没找完就被迫停下？调大时对复杂任务有什么帮助？</li>
+    <li>给 Agent 更复杂的输出要求：比如让它总结一个主题，列出三条要点，再用一小段话解释每一条。</li>
+    <li>把 <code>verbosity_level</code> 调到 2，仔细看 Agent 每一步生成的代码和观察结果，画出它实际走过的步骤。</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 9 章 · 何时定制模型 — AI 开发者指南</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="9">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 9 章 · 第四部分开篇</span>
+<h1>为什么以及何时定制模型</h1>
+<p class="lede">
+  提示工程和 RAG 能解决大量问题，但总有一些任务，模型<strong>本身</strong>就不擅长 —— 再怎么调 prompt 也不稳定。
+  这时就该考虑<strong>微调（fine-tuning）</strong>了。本章没有代码，是一套帮你做决策的思考框架。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>判断什么时候提示工程和 RAG 就够了，什么时候必须微调</li>
+    <li>比较<strong>从零训练</strong>和<strong>微调</strong>的代价与收益</li>
+    <li>认识三种微调<strong>策略</strong>：自监督、监督、强化学习</li>
+    <li>认识两种微调<strong>方法</strong>：无代码和写代码</li>
+    <li>记住微调的三个步骤：准备数据 → 微调 → 测试</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="inbox">故事：被淹没的收件箱</h2>
+
+<p>
+  创业团队的 AI 客服很成功，RAG 让它第一次跑在了工单队列前面。他们乘胜追击：让 AI 顺便给收到的<strong>支持邮件</strong>按主题分类。
+  结果闸门一开，涌进来的远不止支持请求：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 290" role="img" aria-label="各种邮件涌入收件箱：销售询价、合作提案、媒体采访、垃圾邮件、客服请求，需要一个懂公司业务的分类器贴上专属标签">
+  <text class="ttl" x="20" y="22">周一早上：1,200 封未处理邮件</text>
+  <rect class="bx" x="20" y="36" width="250" height="34" rx="6"/><text class="sm" x="32" y="58">Tell me about your enterprise plan…</text>
+  <rect class="bx" x="20" y="78" width="250" height="34" rx="6"/><text class="sm" x="32" y="100">Our companies could collaborate on…</text>
+  <rect class="bx" x="20" y="120" width="250" height="34" rx="6"/><text class="sm" x="32" y="142">Available for an interview about…</text>
+  <rect class="bx" x="20" y="162" width="250" height="34" rx="6"/><text class="sm" x="32" y="184">Boost your SEO with…</text>
+  <rect class="bx" x="20" y="204" width="250" height="34" rx="6"/><text class="sm" x="32" y="226">I can't log in since the update…</text>
+
+  <path class="ln" d="M272 53 L330 128"/><path class="ln" d="M272 95 L330 132"/><path class="ln" d="M272 137 H328"/><path class="ln" d="M272 179 L330 142"/><path class="ln" d="M272 221 L330 146"/>
+  <rect class="bx-p" x="332" y="96" width="150" height="84" rx="12"/>
+  <text class="ttl on-p" x="407" y="124" text-anchor="middle">智能收发室文员</text>
+  <text class="sm" x="407" y="146" text-anchor="middle">懂“这家公司”的</text>
+  <text class="sm" x="407" y="164" text-anchor="middle">邮件类型</text>
+  <path class="ln" d="M484 138 H520" marker-end="url(#ar)"/>
+
+  <rect class="bx-a" x="522" y="36" width="218" height="32" rx="6"/><text class="lbl on-a" x="536" y="57">Sales Lead 销售线索</text>
+  <rect class="bx-b" x="522" y="76" width="218" height="32" rx="6"/><text class="lbl on-b" x="536" y="97">Customer Support 客服</text>
+  <rect class="bx-g" x="522" y="116" width="218" height="32" rx="6"/><text class="lbl on-g" x="536" y="137">Partnership Idea 合作</text>
+  <rect class="bx-r" x="522" y="156" width="218" height="32" rx="6"/><text class="lbl on-r" x="536" y="177">Junk: Ignore 垃圾</text>
+  <rect class="bx-d" x="522" y="196" width="218" height="32" rx="6"/><text class="lbl" x="536" y="217">Unread 留给人工</text>
+  <text class="sm" x="380" y="272" text-anchor="middle">难点不是回复，而是<tspan font-weight="700">理解这是什么邮件</tspan> —— 热门线索还是又一封推销？</text>
+</svg>
+<figcaption>图 9-1　需要的不是通用标签，而是针对这家公司业务的专属分类</figcaption>
+</figure>
+
+<p>
+  现有系统能检索、能回答，却<strong>不懂这家公司的邮件长什么样</strong>：它不会凭销售推销、客服工单、媒体询问在用词上的细微差别来判断意图。
+  这条路就是<strong>微调</strong>。
+</p>
+
+<div class="box warn">
+  <div class="t">&#9888; 数据集比什么都重要，也最难</div>
+  <p>
+    微调需要大量<strong>正确标注</strong>的示例邮件。用强大的 LLM 生成合成邮件看似省事，但有隐患：
+    用大模型生成的数据来训练小模型，它可能很擅长分类“长得像合成数据”的邮件，<strong>在从没见过的真实邮件上却表现难料</strong>。
+    最可靠的数据往往是反映真实任务的数据 —— 也就是你自己的邮件。书中会教你在本机安全处理，不把邮件发到外部服务。
+  </p>
+</div>
+
+<h2 id="when">什么时候需要微调</h2>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 330" role="img" aria-label="决策树：通用任务用提示工程，需要私有或最新数据用 RAG，需要特定技能或严格格式用微调">
+  <rect class="bx" x="270" y="12" width="220" height="40" rx="10"/>
+  <text class="ttl" x="380" y="37" text-anchor="middle">你的任务需要什么？</text>
+  <path class="ln" d="M320 54 L130 100" marker-end="url(#ar)"/>
+  <path class="ln" d="M380 54 V98" marker-end="url(#ar)"/>
+  <path class="ln" d="M440 54 L630 100" marker-end="url(#ar)"/>
+
+  <rect class="bx-g" x="20" y="102" width="220" height="130" rx="12"/>
+  <text class="sm" x="130" y="124" text-anchor="middle">通用知识和能力</text>
+  <text class="sm" x="130" y="142" text-anchor="middle">问答、创作、摘要、翻译、改写</text>
+  <text class="ttl on-g" x="130" y="180" text-anchor="middle">提示工程</text>
+  <text class="sm" x="130" y="202" text-anchor="middle">第 4–6 章</text>
+
+  <rect class="bx-b" x="270" y="102" width="220" height="130" rx="12"/>
+  <text class="sm" x="380" y="124" text-anchor="middle">模型没见过的信息</text>
+  <text class="sm" x="380" y="142" text-anchor="middle">最新新闻、内部文档、某份报告</text>
+  <text class="ttl on-b" x="380" y="180" text-anchor="middle">RAG</text>
+  <text class="sm" x="380" y="202" text-anchor="middle">第 7–8 章</text>
+
+  <rect class="bx-p" x="520" y="102" width="220" height="130" rx="12"/>
+  <text class="sm" x="630" y="124" text-anchor="middle">模型本身不擅长的技能</text>
+  <text class="sm" x="630" y="142" text-anchor="middle">专属分类、严格格式、行业术语</text>
+  <text class="ttl on-p" x="630" y="180" text-anchor="middle">微调</text>
+  <text class="sm" x="630" y="202" text-anchor="middle">第 9–11 章</text>
+
+  <rect class="bx-d" x="20" y="252" width="720" height="64" rx="10"/>
+  <text class="sm" x="36" y="276">例：制造业内部报告有高度特定的模板、大量专有术语、独特的数据格式。RAG 能提供数据点，</text>
+  <text class="sm" x="36" y="296">但模型很难<tspan font-weight="700">持续一致地</tspan>遵守那些格式规则 —— 提示工程能帮一点，要真正稳定就得微调。</text>
+</svg>
+<figcaption>图 9-2　按需求选工具：知识问题交给 RAG，能力问题交给微调</figcaption>
+</figure>
+
+<p>面对“能力问题”，你有两条路：<strong>从零训练一个新模型</strong>，或者<strong>微调一个预训练模型</strong>。</p>
+
+<h2 id="scratch">从零训练 vs 微调</h2>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 330" role="img" aria-label="从零训练需要海量数据、漫长训练；微调从预训练模型出发，只需小规模数据和一小部分时间">
+  <text class="ttl" x="190" y="22" text-anchor="middle">从零训练</text>
+  <rect class="bx-r" x="80" y="36" width="220" height="40" rx="8"/><text class="lbl on-r" x="190" y="61" text-anchor="middle">海量数据（主要来自互联网）</text>
+  <path class="ln" d="M190 78 V94" marker-end="url(#ar)"/>
+  <rect class="bx" x="110" y="96" width="160" height="32" rx="6"/><text class="sm" x="190" y="117" text-anchor="middle">数据准备 → 数据集</text>
+  <path class="ln" d="M190 130 V146" marker-end="url(#ar)"/>
+  <rect class="bx" x="110" y="148" width="160" height="32" rx="6"/><text class="sm" x="190" y="169" text-anchor="middle">训练（从随机参数开始）</text>
+  <path class="ln" d="M190 182 V198" marker-end="url(#ar)"/>
+  <rect class="bx" x="110" y="200" width="160" height="32" rx="6"/><text class="sm" x="190" y="221" text-anchor="middle">验证</text>
+  <path class="ln-d" d="M272 216 H300 V164 H274" marker-end="url(#ar)"/><text class="sm" x="306" y="194">反复</text>
+  <path class="ln" d="M190 234 V250" marker-end="url(#ar)"/>
+  <rect class="bx" x="110" y="252" width="160" height="32" rx="6"/><text class="sm" x="190" y="273" text-anchor="middle">发布新模型</text>
+  <rect class="fill-r" x="40" y="300" width="300" height="12" rx="6"/>
+  <text class="sm on-r" x="190" y="326" text-anchor="middle">耗时：非常长 · 成本：极高</text>
+
+  <path class="ln-d" d="M380 20 V320"/>
+
+  <text class="ttl" x="570" y="22" text-anchor="middle">微调预训练模型</text>
+  <rect class="bx-g" x="480" y="36" width="200" height="40" rx="8"/><text class="lbl on-g" x="580" y="61" text-anchor="middle">小规模、有针对性的数据</text>
+  <path class="ln" d="M580 78 V94" marker-end="url(#ar)"/>
+  <rect class="bx" x="500" y="96" width="160" height="32" rx="6"/><text class="sm" x="580" y="117" text-anchor="middle">数据准备 → 数据集</text>
+  <path class="ln" d="M580 130 V146" marker-end="url(#ar)"/>
+  <rect class="bx-p" x="400" y="148" width="90" height="32" rx="6"/><text class="sm on-p" x="445" y="169" text-anchor="middle">预训练模型</text>
+  <path class="ln-p" d="M492 164 H498" marker-end="url(#ar-p)"/>
+  <rect class="bx-a" x="500" y="148" width="160" height="32" rx="6"/><text class="sm on-a" x="580" y="169" text-anchor="middle">微调（在已有知识上继续学）</text>
+  <path class="ln" d="M580 182 V198" marker-end="url(#ar)"/>
+  <rect class="bx" x="500" y="200" width="160" height="32" rx="6"/><text class="sm" x="580" y="221" text-anchor="middle">验证</text>
+  <path class="ln-d" d="M662 216 H690 V164 H664" marker-end="url(#ar)"/><text class="sm" x="696" y="194">反复</text>
+  <path class="ln" d="M580 234 V250" marker-end="url(#ar)"/>
+  <rect class="bx" x="500" y="252" width="160" height="32" rx="6"/><text class="sm" x="580" y="273" text-anchor="middle">发布新模型</text>
+  <rect class="fill-g" x="430" y="300" width="60" height="12" rx="6"/>
+  <text class="sm on-g" x="570" y="326" text-anchor="middle">耗时：一小部分 · 成本：低得多</text>
+</svg>
+<figcaption>图 9-3　两条路的流程几乎一样，区别在起点：随机参数，还是一个已经很聪明的模型</figcaption>
+</figure>
+
+<div class="tw"><table>
+  <tr><th></th><th>✅ 优点</th><th>❌ 缺点</th></tr>
+  <tr><td><strong>从零训练</strong></td><td>完全控制架构、设置和训练过程；可以为你的任务量身定制；不依赖任何外部模型</td><td>需要海量标注数据；计算成本极高；需要大量机器学习专业知识</td></tr>
+  <tr><td><strong>微调</strong></td><td>站在已有知识的肩膀上；需要的标注数据少得多；训练更快；更容易上手</td><td>对架构和初始参数控制较少；可能继承原始训练数据的偏见；对非常独特的任务未必最优</td></tr>
+</table></div>
+
+<div class="vs">
+  <div class="old"><div class="h">选择从零训练，当你有</div>
+    <ul style="margin:10px 16px 10px 0">
+      <li>一个要求非常独特的任务</li>
+      <li><strong>海量</strong>标注数据</li>
+      <li>做大规模模型开发的专家和资源</li>
+    </ul>
+  </div>
+  <div class="new"><div class="h">选择微调，当你有</div>
+    <ul style="margin:10px 16px 10px 0">
+      <li><strong>有限</strong>的任务专属标注数据</li>
+      <li>想借助已有知识、更快训练</li>
+      <li>一个和预训练任务<strong>相对相似</strong>的任务</li>
+    </ul>
+  </div>
+</div>
+
+<div class="box note">
+  <div class="t">&#9432; 什么是 AI 中的“偏见（bias）”</div>
+  <p>模型持续产生扭曲结果或不公平倾向的<strong>系统性错误</strong>。它通常来自训练数据里的刻板印象、历史不平等或样本不具代表性。</p>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 160" role="img" aria-label="概念示意：在特定任务上，一个经过微调的小模型可能超过一个大得多的通用模型">
+  <text class="ttl" x="20" y="24">在“你的特定任务”上的表现（示意）</text>
+  <text class="lbl" x="20" y="64">通用大模型（数百亿参数）</text>
+  <rect class="fill-b" x="240" y="50" width="330" height="22" rx="4"/>
+  <text class="lbl" x="20" y="108">微调过的小模型（如 DistilBERT）</text>
+  <rect class="fill-g" x="240" y="94" width="420" height="22" rx="4"/>
+  <text class="sm on-g" x="668" y="110">更好！</text>
+  <text class="sm" x="20" y="146">微调的另一个优势：让一个参数少、跑得快、成本低的小模型，在窄领域里真正出色</text>
+</svg>
+<figcaption>图 9-4　小而专，有时胜过大而全</figcaption>
+</figure>
+
+<h2 id="strategies">三种微调策略</h2>
+
+<p>三种策略的区别在于：<strong>数据怎么标注</strong>，以及<strong>模型从什么样的反馈中学习</strong>。</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 300" role="img" aria-label="三种微调策略：自监督从文本模式中学，监督从输入输出示例中学，强化学习从奖励模型的反馈中学">
+  <rect class="bx-b" x="20" y="20" width="230" height="260" rx="12"/>
+  <text class="ttl on-b" x="135" y="46" text-anchor="middle">① 自监督</text>
+  <text class="sm" x="135" y="66" text-anchor="middle">从模式中学</text>
+  <rect class="bx" x="36" y="82" width="198" height="56" rx="8"/>
+  <text class="sm" x="46" y="104">The cat sat on the</text>
+  <rect class="bx-a" x="160" y="90" width="66" height="22" rx="4"/><text class="sm on-a" x="193" y="106" text-anchor="middle">???</text>
+  <text class="sm" x="46" y="128">→ 猜下一个词：mat</text>
+  <text class="sm" x="36" y="164">不需要人工标注，</text>
+  <text class="sm" x="36" y="182">文本本身就是答案</text>
+  <text class="sm" x="36" y="212">例：用你自己的文章微调，</text>
+  <text class="sm" x="36" y="230">让模型模仿你的写作风格</text>
+
+  <rect class="bx-g" x="265" y="20" width="230" height="260" rx="12"/>
+  <text class="ttl on-g" x="380" y="46" text-anchor="middle">② 监督 ★ 本书采用</text>
+  <text class="sm" x="380" y="66" text-anchor="middle">从示例中学（像背抽认卡）</text>
+  <rect class="bx" x="281" y="82" width="120" height="26" rx="5"/><text class="sm" x="291" y="100">“想了解企业版…”</text>
+  <path class="ln" d="M403 95 H421" marker-end="url(#ar)"/>
+  <rect class="bx-a" x="423" y="82" width="60" height="26" rx="5"/><text class="sm on-a" x="453" y="100" text-anchor="middle">销售</text>
+  <rect class="bx" x="281" y="114" width="120" height="26" rx="5"/><text class="sm" x="291" y="132">“登录不了…”</text>
+  <path class="ln" d="M403 127 H421" marker-end="url(#ar)"/>
+  <rect class="bx-a" x="423" y="114" width="60" height="26" rx="5"/><text class="sm on-a" x="453" y="132" text-anchor="middle">客服</text>
+  <text class="sm" x="281" y="164">每条输入都配上正确答案</text>
+  <text class="sm" x="281" y="182">（标签），输入输出关系清晰</text>
+  <text class="sm" x="281" y="212">例：问答对、邮件分类，</text>
+  <text class="sm" x="281" y="230">能精确控制模型行为</text>
+
+  <rect class="bx-p" x="510" y="20" width="230" height="260" rx="12"/>
+  <text class="ttl on-p" x="625" y="46" text-anchor="middle">③ 强化学习</text>
+  <text class="sm" x="625" y="66" text-anchor="middle">从反馈中学</text>
+  <rect class="bx" x="530" y="82" width="80" height="34" rx="6"/><text class="sm" x="570" y="104" text-anchor="middle">模型输出</text>
+  <path class="ln" d="M612 99 H638" marker-end="url(#ar)"/>
+  <rect class="bx-a" x="640" y="82" width="90" height="34" rx="6"/><text class="sm on-a" x="685" y="98" text-anchor="middle">奖励模型</text><text class="sm" x="685" y="112" text-anchor="middle">打分</text>
+  <path class="ln-p" d="M685 118 V140 H570 V120" marker-end="url(#ar-p)"/>
+  <text class="sm on-p" x="627" y="154" text-anchor="middle">反馈 → 改进</text>
+  <text class="sm" x="526" y="182">人类标注员给输出打分，</text>
+  <text class="sm" x="526" y="200">训练出奖励模型</text>
+  <text class="sm" x="526" y="230">例：OpenAI 的 InstructGPT，</text>
+  <text class="sm" x="526" y="248">对齐复杂、主观的偏好</text>
+</svg>
+<figcaption>图 9-5　三种策略：模式、示例、反馈</figcaption>
+</figure>
+
+<div class="box eg">
+  <div class="t">&#127891; 用教孩子来类比</div>
+  <ul>
+    <li><strong>自监督</strong>：给孩子一整座图书馆，让他猜每本书的下一个词 —— 今天的基础 LLM 就是这样训练出来的。</li>
+    <li><strong>监督</strong>：拿抽认卡教，一面是题目，一面是答案。</li>
+    <li><strong>强化学习</strong>：老师批改作业、打分，学生根据分数一遍遍修改。</li>
+  </ul>
+</div>
+
+<h2 id="methods">两种微调方法</h2>
+
+<p>两种方法的区别在于需要多少技术细节和代码。</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 170" role="img" aria-label="无代码微调简单但像黑盒，写代码微调控制力强但投入更多">
+  <rect class="bx-g" x="20" y="30" width="330" height="110" rx="12"/>
+  <text class="ttl on-g" x="185" y="56" text-anchor="middle">无代码：Hugging Face AutoTrain</text>
+  <text class="sm" x="36" y="82">上传训练/验证数据 → 选基座模型 → 填表配参数</text>
+  <text class="sm" x="36" y="102">不用搭环境、管硬件、写训练循环</text>
+  <text class="sm on-r" x="36" y="126">代价：像个黑盒，难以细调</text>
+
+  <rect class="bx-p" x="410" y="30" width="330" height="110" rx="12"/>
+  <text class="ttl on-p" x="575" y="56" text-anchor="middle">写代码：Hugging Face 库 ★ 本书</text>
+  <text class="sm" x="426" y="82">自己加载、处理数据，配置每个训练参数</text>
+  <text class="sm" x="426" y="102">理解底层机制，控制力强</text>
+  <text class="sm on-r" x="426" y="126">代价：要学更多概念、写更多代码</text>
+
+  <path class="ln-a" d="M20 160 H740" marker-end="url(#ar-a)"/>
+  <text class="sm on-a" x="20" y="154">简单</text>
+  <text class="sm on-a" x="740" y="154" text-anchor="end">可控</text>
+</svg>
+<figcaption>图 9-6　两种微调方法</figcaption>
+</figure>
+
+<p>AutoTrain 也有命令行版本，一条命令就能启动一次分类模型微调：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+autotrain text-classification \
+--train \
+--model distilbert/distilbert-base-uncased \
+--project-name my-mail-classifier \
+--data-path data/ \
+--train-split train \
+--valid-split valid \
+--text-column text \
+--target-column label \
+--epochs 3 \
+--batch-size 4 \
+--lr 2e-5 \
+--optimizer adamw_torch \
+--scheduler linear \
+--gradient-accumulation 1 \
+--mixed-precision fp16
+</pre>
+</div>
+
+<p>本书用 Hugging Face 库，按下面的顺序展开：</p>
+
+<div class="cards">
+  <div class="card"><span class="ic">&#128230;</span><h4>准备数据集</h4><p>用代码加载、处理、格式化训练数据（第 10 章）。</p></div>
+  <div class="card"><span class="ic">&#127991;</span><h4>微调分类模型</h4><p>用 DistilBERT 这个更简单的例子学会基本步骤（第 11 章）。</p></div>
+  <div class="card"><span class="ic">&#129302;</span><h4>微调 LLM</h4><p>了解微调 LLM 有何不同：数据格式、LoRA 等技术（第 11 章）。</p></div>
+</div>
+
+<div class="box tip">
+  <div class="t">&#128161; 值得关注的工具</div>
+  <p>这个领域演进很快。<a href="https://unsloth.ai">Unsloth</a> 这类工具专为<strong>快速、省内存</strong>的微调设计，能显著降低硬件门槛，值得探索。</p>
+</div>
+
+<h2 id="steps">微调的三个步骤</h2>
+
+<p>无论用哪种方法（甚至从零训练），流程都是这三步：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 140" role="img" aria-label="微调三步骤：准备数据、微调模型、测试新模型">
+  <rect class="bx-a" x="20" y="30" width="210" height="80" rx="12"/>
+  <text class="ttl on-a" x="125" y="62" text-anchor="middle">① 准备数据</text>
+  <text class="sm" x="125" y="86" text-anchor="middle">第 10 章</text>
+  <path class="ln" d="M232 70 H270" marker-end="url(#ar)"/>
+  <rect class="bx-p" x="272" y="30" width="210" height="80" rx="12"/>
+  <text class="ttl on-p" x="377" y="62" text-anchor="middle">② 微调模型</text>
+  <text class="sm" x="377" y="86" text-anchor="middle">第 11 章</text>
+  <path class="ln" d="M484 70 H522" marker-end="url(#ar)"/>
+  <rect class="bx-g" x="524" y="30" width="216" height="80" rx="12"/>
+  <text class="ttl on-g" x="632" y="62" text-anchor="middle">③ 测试新模型</text>
+  <text class="sm" x="632" y="86" text-anchor="middle">第 11 章</text>
+</svg>
+<figcaption>图 9-7　就这么三步</figcaption>
+</figure>
+
+<h2 id="summary">小结</h2>
+
+<ul>
+  <li>通用模型即使配上提示工程和 RAG，面对要求独特的高度专业任务也会力不从心。</li>
+  <li><strong>从零训练 vs 微调</strong>：控制力 vs 效率。大多数时候选微调。</li>
+  <li>微调能借用已有知识、减少数据需求，<strong>微调过的小模型甚至能超越大模型</strong>。</li>
+  <li>三种策略：<strong>自监督</strong>（模式）、<strong>监督</strong>（示例）、<strong>强化学习</strong>（反馈）。</li>
+  <li>两种方法：<strong>无代码</strong>（AutoTrain）、<strong>写代码</strong>（Hugging Face 库）。</li>
+  <li>三个步骤：<strong>准备数据 → 微调 → 测试</strong>。</li>
+</ul>
+
+<div class="exercise">
+  <h3>思考题</h3>
+  <ol>
+    <li>回顾你工作中的一个 AI 需求：它是“知识问题”还是“能力问题”？该用 RAG 还是微调？</li>
+    <li>如果要为你的团队做一个邮件分类器，你的标签会是哪些？真实的标注数据从哪里来？</li>
+    <li>为什么只用大模型生成的合成数据来训练，可能导致模型在真实数据上表现不稳定？</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

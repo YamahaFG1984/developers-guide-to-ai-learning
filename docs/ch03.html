@@ -1,0 +1,508 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 3 章 · Python 要点 — AI 开发者指南</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="3">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 3 章 · Python 动手</span>
+<h1>LLM 与 API 的 Python 要点</h1>
+<p class="lede">
+  JavaScript 能带你走很远，但 AI 领域做重活的库几乎都在 Python 那边。
+  从这一章起，全书示例改用 Python。别担心没写过 Python —— 我们会用<strong>同一个例子</strong>（第 2 章的流式聊天服务）
+  重写一遍，你可以对照着看两种语言的差别。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>装好 Python、FastAPI、Ollama SDK，理解虚拟环境的作用</li>
+    <li>用 <strong>Pydantic</strong> 定义请求结构，用<strong>装饰器</strong>定义接口</li>
+    <li>弄懂 <code>yield</code> 和<strong>生成器</strong>，以及它为什么天生适合流式</li>
+    <li>记住 Python 最容易踩的坑：<strong>缩进就是语法</strong></li>
+  </ul>
+</div>
+
+<div class="box note">
+  <div class="t">&#128194; 对应代码</div>
+  <p><code>part1/getting_started_python/main.py</code>；前端继续用 <code>part1/client/</code>，一行都不用改。</p>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="install">安装 Python 和库</h2>
+
+<div class="code" data-lang="bash">
+<pre>
+python --version     # 书中测试版本 3.13.7；Mac/Linux 可能要用 python3
+python -m pip install "fastapi[standard]"==0.119.0 ollama==0.6.0
+</pre>
+</div>
+
+<ul>
+  <li><code>fastapi</code>：快速搭建 REST 服务，相当于 Python 界的 Express</li>
+  <li><code>ollama</code>：官方 Python SDK，调用 Ollama API</li>
+</ul>
+
+<div class="box tip">
+  <div class="t">&#128161; 为什么用 <code>python -m pip</code> 而不是 <code>pip</code></div>
+  <p>
+    电脑上常常装着好几个 Python。<code>python -m pip</code> 保证库被装进<strong>你正在用的那个</strong> Python 里，
+    避免“明明装了却 import 不到”的问题。
+  </p>
+</div>
+
+<h3>虚拟环境：每个项目一个独立的“工具箱”</h3>
+
+<p>
+  上面的命令是全局安装，图个简单。但真实项目推荐用<strong>虚拟环境</strong>：本质上就是一个目录，
+  专门存放某个项目的依赖，让不同项目可以用不同版本的库而互不打架。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 240" role="img" aria-label="全局安装时所有项目共享一套库容易冲突；虚拟环境让每个 Part 有独立的库">
+  <text class="ttl on-r" x="180" y="24" text-anchor="middle">全局安装：大家挤一个柜子</text>
+  <rect class="bx-r" x="30" y="40" width="300" height="80" rx="10"/>
+  <text class="mono" x="180" y="68" text-anchor="middle">fastapi 0.119 · ollama 0.6</text>
+  <text class="mono" x="180" y="90" text-anchor="middle">transformers ?? · torch ??</text>
+  <text class="sm on-r" x="180" y="110" text-anchor="middle">项目 A 要 v1，项目 B 要 v2 → 冲突</text>
+  <rect class="bx" x="40" y="160" width="80" height="36" rx="6"/><text class="sm" x="80" y="183" text-anchor="middle">Part 1</text>
+  <rect class="bx" x="140" y="160" width="80" height="36" rx="6"/><text class="sm" x="180" y="183" text-anchor="middle">Part 3</text>
+  <rect class="bx" x="240" y="160" width="80" height="36" rx="6"/><text class="sm" x="280" y="183" text-anchor="middle">Part 4</text>
+  <path class="ln" d="M80 158 L150 122"/><path class="ln" d="M180 158 V122"/><path class="ln" d="M280 158 L210 122"/>
+
+  <path class="ln-d" d="M380 20 V220"/>
+
+  <text class="ttl on-g" x="570" y="24" text-anchor="middle">虚拟环境：每人一个抽屉</text>
+  <rect class="bx-g" x="420" y="40" width="96" height="100" rx="10"/>
+  <text class="ttl on-g" x="468" y="62" text-anchor="middle">part1</text>
+  <text class="sm" x="468" y="84" text-anchor="middle">fastapi</text>
+  <text class="sm" x="468" y="102" text-anchor="middle">ollama</text>
+  <rect class="bx-g" x="522" y="40" width="96" height="100" rx="10"/>
+  <text class="ttl on-g" x="570" y="62" text-anchor="middle">part3</text>
+  <text class="sm" x="570" y="84" text-anchor="middle">chromadb</text>
+  <text class="sm" x="570" y="102" text-anchor="middle">langchain</text>
+  <rect class="bx-g" x="624" y="40" width="96" height="100" rx="10"/>
+  <text class="ttl on-g" x="672" y="62" text-anchor="middle">part4</text>
+  <text class="sm" x="672" y="84" text-anchor="middle">torch</text>
+  <text class="sm" x="672" y="102" text-anchor="middle">transformers</text>
+  <text class="sm" x="570" y="170" text-anchor="middle">每个 Part 有自己的 requirements.txt</text>
+  <text class="sm" x="570" y="188" text-anchor="middle">换 Part 就换一个环境，互不影响</text>
+</svg>
+<figcaption>图 3-1　虚拟环境把依赖隔离开，避免版本冲突</figcaption>
+</figure>
+
+<p>工具有很多（<code>venv</code>、<code>conda</code>、<code>uv</code>……），本仓库 README 用的是 <code>pyenv</code> + <code>pyenv-virtualenv</code>：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+pyenv install 3.13.7
+pyenv virtualenv 3.13.7 developers-guide-to-ai-part1   # 建一个叫 ...-part1 的环境
+pyenv activate developers-guide-to-ai-part1            # 进入它
+python -m pip install -r requirements.txt              # 装这个 Part 的依赖
+</pre>
+</div>
+
+<h2 id="server">完整的 FastAPI 服务</h2>
+
+<p>先看全貌，一共不到 40 行。接下来我们一段段拆开：</p>
+
+<div class="code" data-lang="python" data-file="part1/getting_started_python/main.py">
+<pre>
+from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
+from ollama import Client
+
+from pydantic import BaseModel
+
+app = FastAPI()
+
+app.add_middleware(
+  CORSMiddleware,
+  allow_origins=["*"],
+  allow_credentials=True,
+  allow_methods=["*"],
+  allow_headers=["*"],
+)
+
+client = Client()
+
+
+class ChatRequest(BaseModel):
+  question: str
+
+
+def generate_stream(question: str):
+  result = client.generate(stream=True, model="llama3.2", prompt=question)
+
+  for chunk in result:
+    if chunk.response:
+      print('\nReturned GenerateResponse object for chunk:\n')
+      print(chunk.model_dump_json(indent=2))
+
+      yield chunk.response
+
+
+@app.post("/")
+def chat(chatRequest: ChatRequest):
+  return StreamingResponse(
+    generate_stream(chatRequest.question), media_type="text/plain")
+</pre>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 300" role="img" aria-label="FastAPI 处理一次请求的流程：CORS 中间件、Pydantic 校验、chat 函数、生成器、StreamingResponse">
+  <rect class="bx" x="20" y="20" width="200" height="50" rx="8"/>
+  <text class="mono" x="120" y="42" text-anchor="middle">POST /</text>
+  <text class="mono" x="120" y="60" text-anchor="middle">{"question": "..."}</text>
+  <path class="ln" d="M222 45 H262" marker-end="url(#ar)"/>
+  <rect class="bx-b" x="264" y="20" width="150" height="50" rx="8"/>
+  <text class="mono on-b" x="339" y="42" text-anchor="middle">CORSMiddleware</text>
+  <text class="sm" x="339" y="60" text-anchor="middle">处理跨域</text>
+  <path class="ln" d="M416 45 H456" marker-end="url(#ar)"/>
+  <rect class="bx-p" x="458" y="14" width="170" height="62" rx="10"/>
+  <text class="ttl on-p" x="543" y="38" text-anchor="middle">Pydantic 校验</text>
+  <text class="mono" x="543" y="60" text-anchor="middle">ChatRequest</text>
+  <path class="ln-r" d="M630 45 H668" marker-end="url(#ar-r)"/>
+  <rect class="bx-r" x="670" y="24" width="70" height="42" rx="8"/>
+  <text class="sm on-r" x="705" y="43" text-anchor="middle">格式错</text>
+  <text class="mono on-r" x="705" y="59" text-anchor="middle">422</text>
+
+  <path class="ln-g" d="M543 78 V118" marker-end="url(#ar-g)"/>
+  <text class="sm on-g" x="552" y="104">格式对</text>
+
+  <rect class="bx-a" x="420" y="120" width="246" height="60" rx="10"/>
+  <text class="mono on-a" x="543" y="144" text-anchor="middle">chat(chatRequest)</text>
+  <text class="sm" x="543" y="164" text-anchor="middle">@app.post("/") 注册的函数</text>
+  <path class="ln" d="M418 150 H340" marker-end="url(#ar)"/>
+  <rect class="bx-g" x="120" y="120" width="218" height="60" rx="10"/>
+  <text class="mono on-g" x="229" y="144" text-anchor="middle">generate_stream()</text>
+  <text class="sm" x="229" y="164" text-anchor="middle">生成器：一块块 yield</text>
+
+  <path class="ln" d="M229 182 V214" marker-end="url(#ar)"/>
+  <rect class="bx-b" x="90" y="216" width="278" height="60" rx="10"/>
+  <text class="mono on-b" x="229" y="240" text-anchor="middle">StreamingResponse</text>
+  <text class="sm" x="229" y="260" text-anchor="middle">每拿到一块就发给客户端</text>
+  <path class="ln-b" d="M370 246 H520" marker-end="url(#ar-b)"/>
+  <text class="sm" x="445" y="238" text-anchor="middle">text/plain</text>
+  <rect class="bx" x="522" y="222" width="150" height="48" rx="8"/><text class="lbl" x="597" y="251" text-anchor="middle">浏览器 / curl</text>
+</svg>
+<figcaption>图 3-2　一次请求在 FastAPI 里走过的路</figcaption>
+</figure>
+
+<h2 id="setup">第一段：创建应用和客户端</h2>
+
+<div class="code" data-lang="python">
+<pre>
+from fastapi import FastAPI                              # ❶ 导入四个类
+from fastapi.responses import StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
+from ollama import Client
+
+app = FastAPI()                                          # ❷ 创建应用
+
+app.add_middleware(                                      # ❸ 加 CORS 中间件
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+client = Client()                                        # ❹ Ollama 客户端，默认配置
+</pre>
+</div>
+
+<div class="tw"><table>
+  <tr><th>类</th><th>作用</th></tr>
+  <tr><td><code>FastAPI</code></td><td>应用主类，定义接口、处理请求、配置行为的中心</td></tr>
+  <tr><td><code>StreamingResponse</code></td><td>分块（而非一次性）把数据发给客户端 —— 正好用来流式返回 LLM 回答</td></tr>
+  <tr><td><code>CORSMiddleware</code></td><td>和 Node 版一样，自动处理跨域</td></tr>
+  <tr><td><code>Client</code></td><td>和本地 Ollama 通信的客户端</td></tr>
+</table></div>
+
+<div class="box eg">
+  <div class="t">&#128073; Python 语法点：命名参数</div>
+  <p>
+    <code>allow_origins=["*"]</code> 这种 <code>名字=值</code> 的写法叫<strong>关键字参数</strong>。
+    它不依赖参数顺序，一眼能看出每个值是干什么的，Python 里特别常见，尤其是可选参数。
+    JS 里类似的效果要靠传一个对象 <code>{ allowOrigins: ['*'] }</code>。
+  </p>
+</div>
+
+<h2 id="pydantic">第二段：Pydantic 模型与装饰器</h2>
+
+<div class="code" data-lang="python">
+<pre>
+from pydantic import BaseModel          # ❶ 随 FastAPI 一起安装，不用单独装
+
+class ChatRequest(BaseModel):           # ❷ 括号里是父类：继承 BaseModel
+    question: str                       #    一个字符串类型的字段
+
+@app.post("/")                          # ❸ 装饰器：把下面的函数注册为 POST / 的处理函数
+def chat(chatRequest: ChatRequest):     # ❹ 参数类型告诉 FastAPI 请求体应长什么样
+    ...
+</pre>
+</div>
+
+<p>
+  <strong>Pydantic</strong> 让你用一个普通的类描述 JSON 的结构。
+  <code>ChatRequest</code> 说的是：“请求体必须是一个对象，里面有个字符串 <code>question</code>”。
+  FastAPI 看到 <code>chat</code> 的参数类型是 <code>ChatRequest</code>，就会自动完成三件事：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 180" role="img" aria-label="Pydantic 把 JSON 文本自动转换为 Python 对象，并做类型校验">
+  <rect class="bx" x="20" y="40" width="220" height="100" rx="10"/>
+  <text class="sm" x="30" y="30">HTTP 请求体（纯文本）</text>
+  <text class="mono" x="40" y="80">{</text>
+  <text class="mono" x="56" y="98">"question": "Who are</text>
+  <text class="mono" x="56" y="116">   the Beatles?"</text>
+  <text class="mono" x="40" y="132">}</text>
+
+  <path class="ln-p" d="M242 90 H300" marker-end="url(#ar-p)"/>
+  <rect class="bx-p" x="302" y="40" width="170" height="100" rx="10"/>
+  <text class="ttl on-p" x="387" y="66" text-anchor="middle">Pydantic</text>
+  <text class="sm" x="387" y="88" text-anchor="middle">① 解析 JSON</text>
+  <text class="sm" x="387" y="106" text-anchor="middle">② 检查类型</text>
+  <text class="sm" x="387" y="124" text-anchor="middle">③ 创建对象</text>
+
+  <path class="ln-p" d="M474 90 H530" marker-end="url(#ar-p)"/>
+  <rect class="bx-g" x="532" y="40" width="208" height="100" rx="10"/>
+  <text class="sm" x="542" y="30">Python 对象</text>
+  <text class="mono on-g" x="636" y="80" text-anchor="middle">ChatRequest(</text>
+  <text class="mono" x="636" y="100" text-anchor="middle">question="Who..."</text>
+  <text class="mono on-g" x="636" y="120" text-anchor="middle">)</text>
+
+  <text class="sm on-r" x="387" y="168" text-anchor="middle">缺字段或类型不对？FastAPI 自动返回 422 错误，你的函数根本不会被调用</text>
+</svg>
+<figcaption>图 3-3　Pydantic：JSON 进，类型安全的对象出</figcaption>
+</figure>
+
+<p>
+  那个 <code>@app.post("/")</code> 叫<strong>装饰器（decorator）</strong>。第一次看有点像魔法，
+  但它的意思很简单：“把下面这个函数挂到 <code>POST /</code> 这个地址上”。
+  全书会大量用到装饰器 —— 它是 Python 里把你的代码“接入”某个框架的最常见方式。
+  到第 14 章，你会看到用 <code>@tool</code> 装饰器把一个函数变成 AI 可调用的工具。
+</p>
+
+<div class="vs">
+  <div class="old"><div class="h">Express（第 2 章）</div>
+<div class="code" data-lang="js"><pre>
+app.use(express.json());
+app.post('/', (req, res) =&gt; {
+  const q = req.body.question;
+  // 没有自动校验
+});
+</pre></div></div>
+  <div class="new"><div class="h">FastAPI（本章）</div>
+<div class="code" data-lang="python"><pre>
+class ChatRequest(BaseModel):
+    question: str
+
+@app.post("/")
+def chat(req: ChatRequest):
+    q = req.question   # 已校验
+</pre></div></div>
+</div>
+
+<h2 id="yield">第三段：<code>yield</code> 与生成器</h2>
+
+<div class="code" data-lang="python">
+<pre>
+def generate_stream(question: str):
+    result = client.generate(model="llama3.2", stream=True, prompt=question)  # ❶ 开启流式
+
+    for chunk in result:                # ❷ 遍历模型吐出的每一块
+        if chunk.response:              # ❸ 有内容才处理
+            yield chunk.response        # ❹ 交出这一块，然后暂停在这里
+</pre>
+</div>
+
+<p>
+  这段代码的灵魂是 <code>yield</code>。函数体里只要出现 <code>yield</code>，它就变成了<strong>生成器函数</strong>。
+  调用它时<strong>不会立刻执行</strong>，而是返回一个“生成器对象”。每当有人向它要下一个值，它才往下跑，
+  跑到 <code>yield</code> 就把值交出去，然后<strong>原地暂停</strong>，等下一次被叫醒。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 290" role="img" aria-label="生成器的工作方式：StreamingResponse 每次索要下一个值，生成器运行到 yield 交出一块然后暂停">
+  <text class="ttl on-b" x="130" y="24" text-anchor="middle">StreamingResponse（消费者）</text>
+  <text class="ttl on-g" x="560" y="24" text-anchor="middle">generate_stream（生成器）</text>
+  <path class="ln-d" d="M130 36 V280"/><path class="ln-d" d="M560 36 V280"/>
+
+  <path class="ln-b" d="M130 60 H556" marker-end="url(#ar-b)"/><text class="lbl" x="345" y="54" text-anchor="middle">要下一个值</text>
+  <rect class="bx-g" x="480" y="68" width="160" height="28" rx="6"/><text class="sm" x="560" y="87" text-anchor="middle">运行到 yield "The"</text>
+  <path class="ln-g" d="M556 108 H134" marker-end="url(#ar-g)"/><text class="mono on-g" x="345" y="102" text-anchor="middle">"The"</text>
+  <text class="sm" x="140" y="126">发给浏览器 ✓</text>
+  <text class="sm on-p" x="570" y="126">‖ 暂停，等待</text>
+
+  <path class="ln-b" d="M130 150 H556" marker-end="url(#ar-b)"/><text class="lbl" x="345" y="144" text-anchor="middle">要下一个值</text>
+  <rect class="bx-g" x="480" y="158" width="160" height="28" rx="6"/><text class="sm" x="560" y="177" text-anchor="middle">继续到 yield " Beatles"</text>
+  <path class="ln-g" d="M556 198 H134" marker-end="url(#ar-g)"/><text class="mono on-g" x="345" y="192" text-anchor="middle">" Beatles"</text>
+  <text class="sm" x="140" y="216">发给浏览器 ✓</text>
+  <text class="sm on-p" x="570" y="216">‖ 暂停，等待</text>
+
+  <text class="lbl" x="345" y="248" text-anchor="middle">…… 一直循环，直到模型生成完毕、for 循环结束</text>
+  <text class="sm" x="345" y="270" text-anchor="middle">生成器函数返回 = 流结束 = HTTP 响应关闭</text>
+</svg>
+<figcaption>图 3-4　生成器是“要一个、给一个”的，天然适合流式场景</figcaption>
+</figure>
+
+<div class="box eg">
+  <div class="t">&#127843; 打个比方：回转寿司</div>
+  <p>
+    普通函数像外卖：全部做好装盒，一次性送到（<code>return</code> 一个完整列表）。
+    生成器像回转寿司：厨师做好一盘就放上传送带（<code>yield</code>），你吃完一盘再来下一盘，
+    不用等所有菜都做完才开吃。
+  </p>
+</div>
+
+<p>最后，路由函数只需要把生成器交给 <code>StreamingResponse</code>，剩下的它全包了：</p>
+
+<div class="code" data-lang="python">
+<pre>
+@app.post("/")
+def chat(chatRequest: ChatRequest):
+    return StreamingResponse(
+        generate_stream(chatRequest.question),   # 生成器对象（此时还没开始执行）
+        media_type="text/plain")                 # 告诉客户端：纯文本
+</pre>
+</div>
+
+<h2 id="indent">最容易踩的坑：缩进就是语法</h2>
+
+<p>
+  从 JavaScript、Java、C# 过来的同学注意：那些语言用花括号 <code>{}</code> 划分代码块，缩进只是为了好看。
+  <strong>Python 没有花括号，行首有几个空格决定了这一行属于哪个 <code>if</code>、<code>for</code> 或 <code>def</code>。</strong>
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 210" role="img" aria-label="同样的代码只是缩进不同，yield 的位置就不同，行为完全改变">
+  <text class="ttl on-g" x="190" y="24" text-anchor="middle">✓ yield 在 if 里面</text>
+  <rect class="bx-g" x="20" y="36" width="340" height="120" rx="10"/>
+  <text class="mono" x="36" y="64">for chunk in result:</text>
+  <rect class="fill-g" x="36" y="74" width="18" height="70" rx="2" opacity=".25"/>
+  <text class="mono" x="60" y="92">if chunk.response:</text>
+  <rect class="fill-g" x="60" y="100" width="18" height="44" rx="2" opacity=".25"/>
+  <text class="mono" x="84" y="120">yield chunk.response</text>
+  <text class="sm" x="190" y="180" text-anchor="middle">只交出有内容的块</text>
+
+  <text class="ttl on-r" x="570" y="24" text-anchor="middle">✗ 少缩进一级</text>
+  <rect class="bx-r" x="400" y="36" width="340" height="120" rx="10"/>
+  <text class="mono" x="416" y="64">for chunk in result:</text>
+  <rect class="fill-r" x="416" y="74" width="18" height="70" rx="2" opacity=".25"/>
+  <text class="mono" x="440" y="92">if chunk.response:</text>
+  <text class="mono" x="440" y="120">yield chunk.response</text>
+  <text class="sm on-r" x="570" y="180" text-anchor="middle">if 下面没有代码块 → IndentationError</text>
+  <text class="sm" x="570" y="198" text-anchor="middle">更糟的情况：能运行，但逻辑悄悄变了</text>
+</svg>
+<figcaption>图 3-5　在 Python 里，挪动几个空格就可能改变程序的含义</figcaption>
+</figure>
+
+<div class="box warn">
+  <div class="t">&#9888; 统一用空格，别混用 Tab</div>
+  <p>保持一致的缩进（通常 2 或 4 个空格），并让编辑器自动处理。Tab 和空格混用是新手最常见的神秘报错来源。</p>
+</div>
+
+<h2 id="run">运行和测试</h2>
+
+<div class="code" data-lang="bash">
+<pre>
+cd part1/getting_started_python
+fastapi dev main.py
+</pre>
+</div>
+
+<div class="code" data-lang="text">
+<pre>
+server   Server started at http://127.0.0.1:8000
+server   Documentation at http://127.0.0.1:8000/docs
+tip      Running in development mode, for production use: fastapi run
+INFO     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+</pre>
+</div>
+
+<div class="box tip">
+  <div class="t">&#128161; 白送的 API 文档</div>
+  <p>打开 <code>http://127.0.0.1:8000/docs</code>，FastAPI 根据你的 Pydantic 模型自动生成了一个交互式文档页，能直接在浏览器里发请求测试。</p>
+</div>
+
+<div class="code" data-lang="bash">
+<pre>
+curl -N -X POST -H "Content-Type: application/json" -d \
+  '{"question": "Can you tell me about the Beatles in 500 words or less?"}' \
+  http://localhost:8000
+</pre>
+</div>
+
+<p>更妙的是，第 2 章的 React 前端<strong>一行不改</strong>就能直接用 —— 因为接口约定完全一样：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 170" role="img" aria-label="同一个 React 前端可以连接 Express 版或 FastAPI 版的服务，因为它们提供相同的接口">
+  <rect class="bx-a" x="20" y="55" width="170" height="60" rx="10"/>
+  <text class="ttl on-a" x="105" y="80" text-anchor="middle">React 前端</text>
+  <text class="sm" x="105" y="100" text-anchor="middle">part1/client</text>
+  <path class="ln" d="M192 85 H270" marker-end="url(#ar)"/>
+  <rect class="bx-d" x="272" y="45" width="210" height="80" rx="10"/>
+  <text class="ttl" x="377" y="72" text-anchor="middle">接口约定（契约）</text>
+  <text class="mono" x="377" y="94" text-anchor="middle">POST localhost:8000</text>
+  <text class="mono" x="377" y="112" text-anchor="middle">{"question": ...}</text>
+  <path class="ln" d="M484 70 L560 44" marker-end="url(#ar)"/>
+  <path class="ln" d="M484 100 L560 126" marker-end="url(#ar)"/>
+  <rect class="bx" x="562" y="20" width="178" height="46" rx="8"/>
+  <text class="lbl" x="651" y="48" text-anchor="middle">Express（第 2 章）</text>
+  <rect class="bx-g" x="562" y="104" width="178" height="46" rx="8"/>
+  <text class="lbl on-g" x="651" y="132" text-anchor="middle">FastAPI（第 3 章）</text>
+</svg>
+<figcaption>图 3-6　只要遵守同一个接口约定，后端用什么语言写，前端都不关心</figcaption>
+</figure>
+
+<h2 id="compare">JavaScript vs Python 对照表</h2>
+
+<div class="tw"><table>
+  <tr><th>概念</th><th>JavaScript（第 2 章）</th><th>Python（第 3 章）</th></tr>
+  <tr><td>Web 框架</td><td>Express</td><td>FastAPI</td></tr>
+  <tr><td>创建应用</td><td><code>const app = express()</code></td><td><code>app = FastAPI()</code></td></tr>
+  <tr><td>CORS</td><td><code>app.use(cors())</code></td><td><code>app.add_middleware(CORSMiddleware, ...)</code></td></tr>
+  <tr><td>解析请求体</td><td><code>app.use(express.json())</code></td><td>Pydantic <code>BaseModel</code> 自动完成</td></tr>
+  <tr><td>定义路由</td><td><code>app.post('/', handler)</code></td><td><code>@app.post("/")</code> + <code>def chat(...)</code></td></tr>
+  <tr><td>LLM 客户端</td><td><code>new Ollama()</code></td><td><code>Client()</code></td></tr>
+  <tr><td>流式开关</td><td><code>stream: true</code></td><td><code>stream=True</code></td></tr>
+  <tr><td>遍历流</td><td><code>for await (const chunk of iter)</code></td><td><code>for chunk in result</code></td></tr>
+  <tr><td>发出一块</td><td><code>response.write(chunk.response)</code></td><td><code>yield chunk.response</code></td></tr>
+  <tr><td>结束响应</td><td><code>response.end()</code></td><td>生成器结束，<code>StreamingResponse</code> 自动关闭</td></tr>
+  <tr><td>启动</td><td><code>node server.mjs</code></td><td><code>fastapi dev main.py</code></td></tr>
+</table></div>
+
+<h2 id="summary">小结</h2>
+
+<ul>
+  <li>Python 是 AI 开发的首选语言，从这里开始全书示例都用 Python。</li>
+  <li>用虚拟环境隔离每个 Part 的依赖；安装库用 <code>python -m pip</code>。</li>
+  <li><strong>Pydantic</strong> 用类描述 JSON 结构，自动解析和校验（第 6 章还会用它约束 LLM 的输出）。</li>
+  <li><strong>装饰器</strong>把函数接入框架；<strong>生成器</strong>（<code>yield</code>）“要一个给一个”，天生适合流式。</li>
+  <li>Python 的缩进就是语法，务必保持一致。</li>
+</ul>
+
+<div class="exercise">
+  <h3>动手练习</h3>
+  <ol>
+    <li>示例代码已经在流式过程中用 <code>chunk.model_dump_json(indent=2)</code> 打印整个 chunk。发一次请求，看看 <code>GenerateResponse</code> 里都有哪些字段。</li>
+    <li>把这个服务当作第二部分的“提示词实验台”。同时打开 ChatGPT、Gemini 或 Claude，拿同一个问题对比回答，想想那些产品在 LLM 之上还额外做了什么。</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

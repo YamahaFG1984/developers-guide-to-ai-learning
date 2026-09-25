@@ -1,0 +1,593 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 2 章 · 构建第一个 LLM 应用 — AI 开发者指南</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="2">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 2 章 · JavaScript 动手</span>
+<h1>构建第一个 LLM 应用</h1>
+<p class="lede">
+  上一章讲概念，这一章动手。我们要在自己电脑上跑一个大模型，用 Node.js 写一个服务去调用它，
+  再把回答像 ChatGPT 那样<strong>一个字一个字地“流”</strong>到网页上。整个过程不花一分钱。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>用 Ollama 在本地运行 Llama 3.2</li>
+    <li>用 Express 写一个服务，把 prompt 发给 LLM 并返回回答</li>
+    <li>理解<strong>流式响应（streaming）</strong>：为什么需要、服务端怎么写、前端怎么读</li>
+    <li>认识 CORS 和 Express 中间件</li>
+  </ul>
+</div>
+
+<div class="box note">
+  <div class="t">&#128194; 对应代码</div>
+  <ul>
+    <li><code>part1/getting_started/section1/</code> —— 最简单的 LLM 调用</li>
+    <li><code>part1/getting_started/section2/</code> —— 流式返回</li>
+    <li><code>part1/client/</code> —— Vite + React 聊天前端</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="arch">我们要搭一个什么东西</h2>
+
+<p>
+  回忆第 1 章：ChatGPT 是一个界面，背后调 OpenAI API，API 背后是 GPT 模型。
+  我们要搭一个结构完全一样、但每一层都换成自己的版本：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 270" role="img" aria-label="ChatGPT 的三层结构与我们本章要搭的三层结构对照">
+  <text class="ttl" x="190" y="24" text-anchor="middle">ChatGPT 的结构</text>
+  <text class="ttl on-a" x="570" y="24" text-anchor="middle">本章我们搭的</text>
+
+  <rect class="bx" x="90" y="40" width="200" height="50" rx="10"/>
+  <text class="ttl" x="190" y="70" text-anchor="middle">ChatGPT 网页</text>
+  <rect class="bx-a" x="470" y="40" width="200" height="50" rx="10"/>
+  <text class="ttl on-a" x="570" y="62" text-anchor="middle">React 前端 + Express 服务</text>
+  <text class="sm" x="570" y="80" text-anchor="middle">你写的代码</text>
+
+  <path class="ln" d="M190 92 V120" marker-end="url(#ar)"/>
+  <path class="ln-a" d="M570 92 V120" marker-end="url(#ar-a)"/>
+
+  <rect class="bx" x="90" y="122" width="200" height="50" rx="10"/>
+  <text class="ttl" x="190" y="152" text-anchor="middle">OpenAI API</text>
+  <rect class="bx-b" x="470" y="122" width="200" height="50" rx="10"/>
+  <text class="ttl on-b" x="570" y="144" text-anchor="middle">Ollama API</text>
+  <text class="sm" x="570" y="162" text-anchor="middle">localhost:11434</text>
+
+  <path class="ln" d="M190 174 V202" marker-end="url(#ar)"/>
+  <path class="ln-b" d="M570 174 V202" marker-end="url(#ar-b)"/>
+
+  <rect class="bx" x="90" y="204" width="200" height="50" rx="10"/>
+  <text class="ttl" x="190" y="234" text-anchor="middle">GPT（云端）</text>
+  <rect class="bx-p" x="470" y="204" width="200" height="50" rx="10"/>
+  <text class="ttl on-p" x="570" y="226" text-anchor="middle">Llama 3.2</text>
+  <text class="sm" x="570" y="244" text-anchor="middle">跑在你自己的电脑上</text>
+
+  <path class="ln-d" d="M300 65 H460"/><path class="ln-d" d="M300 147 H460"/><path class="ln-d" d="M300 229 H460"/>
+  <text class="sm" x="380" y="60" text-anchor="middle">对应</text>
+  <text class="sm" x="380" y="142" text-anchor="middle">对应</text>
+  <text class="sm" x="380" y="224" text-anchor="middle">对应</text>
+</svg>
+<figcaption>图 2-1　左边是 ChatGPT，右边是我们本章要搭的应用，每一层一一对应</figcaption>
+</figure>
+
+<p>本章有三个小目标：<strong>① 捕获用户输入拼成 prompt；② 通过 API 发给 LLM；③ 把回答流式返回给用户。</strong></p>
+
+<h2 id="setup">准备环境</h2>
+
+<h3>先看看电脑够不够</h3>
+
+<p>
+  Ollama 使用的是<strong>量化模型（quantized model）</strong>：把模型参数的精度降低一点，换来更小的体积和更快的速度。
+  所以普通笔记本也能跑。本书默认用 3B（30 亿参数）版本，配置低可以用 1B 版本：
+</p>
+
+<div class="tw"><table>
+  <tr><th>模型</th><th>磁盘占用</th><th>需要内存</th><th>适用</th></tr>
+  <tr><td>Llama 3.2 <strong>3B</strong></td><td>2 GB</td><td>约 6 GB</td><td>本书默认</td></tr>
+  <tr><td>Llama 3.2 <strong>1B</strong></td><td>1.3 GB</td><td>约 2 GB</td><td>低配电脑</td></tr>
+</table></div>
+
+<div class="box tip">
+  <div class="t">&#128161; SLM：小语言模型</div>
+  <p>
+    能在普通硬件上跑的轻量模型也被叫做 <strong>SLM（Small Language Model）</strong>。
+    用 1B 也能跑完所有例子，只是回答会有差别 —— 这恰恰很有意思：你能亲眼看到模型规模对效果的影响。
+  </p>
+</div>
+
+<h3>安装并启动 Ollama</h3>
+
+<p>
+  从 <a href="https://ollama.com">ollama.com</a> 下载安装（书中示例基于 0.12.5）。Ollama 其实由两部分组成：
+  一个<strong>后台服务</strong>（负责加载模型、提供 HTTP API）和一个<strong>命令行工具</strong>（让你管理模型、直接聊天）。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 220" role="img" aria-label="Ollama 结构：命令行和你的应用都通过 HTTP 访问 Ollama 服务，服务负责加载本地模型文件">
+  <rect class="bx" x="20" y="30" width="170" height="54" rx="10"/>
+  <text class="ttl" x="105" y="54" text-anchor="middle">终端</text>
+  <text class="mono" x="105" y="72" text-anchor="middle">ollama run …</text>
+  <rect class="bx-a" x="20" y="130" width="170" height="54" rx="10"/>
+  <text class="ttl on-a" x="105" y="154" text-anchor="middle">你的应用</text>
+  <text class="mono" x="105" y="172" text-anchor="middle">ollama-js / HTTP</text>
+
+  <path class="ln" d="M192 57 L290 100" marker-end="url(#ar)"/>
+  <path class="ln-a" d="M192 157 L290 118" marker-end="url(#ar-a)"/>
+
+  <rect class="bx-b" x="294" y="66" width="200" height="86" rx="12"/>
+  <text class="ttl on-b" x="394" y="94" text-anchor="middle">Ollama 服务</text>
+  <text class="mono" x="394" y="116" text-anchor="middle">ollama serve</text>
+  <text class="sm" x="394" y="136" text-anchor="middle">监听 localhost:11434</text>
+
+  <path class="ln-b" d="M496 109 H552" marker-end="url(#ar-b)"/>
+  <rect class="bx-p" x="556" y="46" width="184" height="36" rx="8"/><text class="mono on-p" x="648" y="69" text-anchor="middle">llama3.2 (3B)</text>
+  <rect class="bx-p" x="556" y="90" width="184" height="36" rx="8"/><text class="mono on-p" x="648" y="113" text-anchor="middle">llama3.2:1b</text>
+  <rect class="bx-p" x="556" y="134" width="184" height="36" rx="8"/><text class="mono on-p" x="648" y="157" text-anchor="middle">mxbai-embed-large</text>
+  <text class="sm" x="648" y="196" text-anchor="middle">本地下载好的模型（ollama list）</text>
+</svg>
+<figcaption>图 2-2　Ollama = 一个本地 HTTP 服务 + 一个命令行工具 + 一堆下载好的模型</figcaption>
+</figure>
+
+<div class="tw"><table>
+  <tr><th>命令</th><th>作用</th></tr>
+  <tr><td><code>ollama serve</code></td><td>启动本地服务，并实时打印你的应用发来的请求日志</td></tr>
+  <tr><td><code>ollama list</code></td><td>列出本机已下载的模型</td></tr>
+  <tr><td><code>ollama pull &lt;model&gt;</code></td><td>下载指定模型</td></tr>
+  <tr><td><code>ollama run &lt;model&gt;</code></td><td>下载（如需要）并进入与该模型的对话</td></tr>
+</table></div>
+
+<div class="code" data-lang="bash">
+<pre>
+# 终端 1：启动服务（保持开着）
+ollama serve
+
+# 终端 2：下载并运行模型
+ollama run llama3.2        # 3B，默认
+ollama run llama3.2:1b     # 或者低配版
+</pre>
+</div>
+
+<p>进入对话后，直接提问试试：</p>
+
+<div class="code" data-lang="text">
+<pre>
+&gt;&gt;&gt; Who are the Beatles?
+The Beatles were a British rock band that formed in Liverpool, England in 1960...
+
+&gt;&gt;&gt; /?          # 查看可用命令，/bye 退出
+</pre>
+</div>
+
+<div class="box deep">
+  <div class="t">&#128302; 喜欢图形界面？试试 LM Studio</div>
+  <p>
+    Ollama 以命令行为主，界面很简陋。<a href="https://lmstudio.ai">LM Studio</a> 提供干净的图形界面，
+    能自动检测 CPU/GPU 选最优后端，还提供 <strong>OpenAI 兼容的 API</strong>。本书用 Ollama，但两者概念相通。
+  </p>
+</div>
+
+<h3>安装 Node.js</h3>
+<p>从 <a href="https://nodejs.org">nodejs.org</a> 下载（书中基于 24.8.0），然后 <code>node -v</code> 确认。</p>
+
+<h2 id="call">第一步：调用 LLM（非流式）</h2>
+
+<div class="code" data-lang="bash">
+<pre>
+mkdir ai-for-devs &amp;&amp; cd ai-for-devs
+npm init -y
+npm install express@5.1.0 ollama@0.6.2
+</pre>
+</div>
+
+<ul>
+  <li><code>express</code>：用几行代码搭一个 Web 服务器</li>
+  <li><code>ollama</code>（ollama-js）：官方 JS 库，帮你调用 Ollama API</li>
+</ul>
+
+<div class="box eg">
+  <div class="t">&#127859; 打个比方</div>
+  <p>
+    <code>package.json</code> 里的 <code>dependencies</code> 就像菜谱上的<strong>原料清单</strong>。
+    只要有菜谱，随时能把原料买齐（<code>npm install</code>）。所以分享项目时<strong>不用带上 <code>node_modules</code></strong>。
+  </p>
+</div>
+
+<div class="code" data-lang="js" data-file="part1/getting_started/section1/server.mjs">
+<pre>
+import express from "express";               // ❶ 导入 Express
+import { Ollama } from "ollama";             //   和 Ollama 客户端
+
+const app = express();                       // ❷ 创建应用
+const ollama = new Ollama();                 // ❸ 创建 Ollama 客户端
+
+app.get('/', async (request, response) =&gt; {  // ❹ 访问根路径时执行
+  response.type('text/plain');               // ❺ 告诉浏览器：返回的是纯文本
+
+  const modelResponse = await ollama.generate({  // ❻ 把 prompt 发给模型，等它答完
+    model: 'llama3.2',
+    prompt: "Can you simply say 'test'?"
+  });
+
+  console.log(modelResponse);                // 打印完整响应对象，看看里面有什么
+  response.send(modelResponse.response);     // 只把回答文本发给浏览器
+});
+
+app.listen(8000, () =&gt; {                     // ❼ 监听 8000 端口
+  console.log(`Server is running on port 8000`);
+});
+</pre>
+</div>
+
+<ol class="steps">
+  <li><strong>导入两个工具</strong><code>express</code> 负责路由和请求/响应；<code>Ollama</code> 负责和 Ollama API 对话。</li>
+  <li><strong>创建应用和客户端</strong><code>express()</code> 得到服务器，<code>new Ollama()</code> 得到默认连接 <code>localhost:11434</code> 的客户端。</li>
+  <li><strong>注册路由</strong><code>app.get('/', …)</code>：有人 GET 根路径时执行处理函数。<code>request</code> 是收到的请求，<code>response</code> 是要发回的响应。</li>
+  <li><strong>设置 Content-Type</strong><code>text/plain</code> 告诉浏览器“别当 HTML 解析”。</li>
+  <li><strong>调用模型</strong><code>generate</code> 是异步方法，<code>await</code> 会一直等到模型<strong>完整</strong>生成回答。</li>
+</ol>
+
+<h3>一次请求在底层走了几步？</h3>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 330" role="img" aria-label="时序图：浏览器请求 Express，Express 通过 ollama-js 调用 Ollama 服务，服务把 prompt 交给 Llama 3.2，结果原路返回">
+  <rect class="bx" x="20" y="16" width="130" height="44" rx="8"/><text class="ttl" x="85" y="43" text-anchor="middle">浏览器</text>
+  <rect class="bx-a" x="210" y="16" width="130" height="44" rx="8"/><text class="ttl on-a" x="275" y="36" text-anchor="middle">Express</text><text class="sm" x="275" y="52" text-anchor="middle">server.mjs</text>
+  <rect class="bx-b" x="400" y="16" width="130" height="44" rx="8"/><text class="ttl on-b" x="465" y="36" text-anchor="middle">Ollama 服务</text><text class="sm" x="465" y="52" text-anchor="middle">:11434</text>
+  <rect class="bx-p" x="590" y="16" width="150" height="44" rx="8"/><text class="ttl on-p" x="665" y="43" text-anchor="middle">Llama 3.2</text>
+
+  <path class="ln-d" d="M85 62 V320"/><path class="ln-d" d="M275 62 V320"/><path class="ln-d" d="M465 62 V320"/><path class="ln-d" d="M665 62 V320"/>
+
+  <path class="ln" d="M85 96 H271" marker-end="url(#ar)"/><text class="mono" x="180" y="90" text-anchor="middle">GET /</text>
+  <path class="ln-a" d="M275 136 H461" marker-end="url(#ar-a)"/><text class="mono" x="370" y="118" text-anchor="middle">generate()</text><text class="sm" x="370" y="131" text-anchor="middle">POST /api/generate</text>
+  <path class="ln-b" d="M465 172 H661" marker-end="url(#ar-b)"/><text class="lbl" x="565" y="166" text-anchor="middle">prompt</text>
+  <rect class="bx-p" x="640" y="182" width="50" height="40" rx="6"/><text class="sm" x="665" y="206" text-anchor="middle">生成中</text>
+  <path class="ln-p" d="M665 232 H469" marker-end="url(#ar-p)"/><text class="lbl" x="565" y="226" text-anchor="middle">完整回答</text>
+  <path class="ln-b" d="M465 268 H279" marker-end="url(#ar-b)"/><text class="sm" x="370" y="262" text-anchor="middle">JSON（GenerateResponse）</text>
+  <path class="ln-a" d="M275 304 H89" marker-end="url(#ar-a)"/><text class="mono" x="180" y="298" text-anchor="middle">"Test."</text>
+</svg>
+<figcaption>图 2-3　非流式调用：Express 要等模型把<strong>整段</strong>回答生成完，才能一次性返回</figcaption>
+</figure>
+
+<div class="code" data-lang="bash">
+<pre>
+node server.mjs
+# Server is running on port 8000
+# 浏览器打开 http://localhost:8000，会看到：Test.
+</pre>
+</div>
+
+<h2 id="stream">第二步：流式响应</h2>
+
+<h3>为什么需要流式？</h3>
+
+<p>
+  LLM 生成文本很慢 —— 一段 500 字的回答可能要十几秒。如果像上面那样等它全部生成完再返回，
+  用户会盯着空白页面干等。ChatGPT 的办法是<strong>生成一点，显示一点</strong>。
+  OpenAI 巧妙地把 LLM 的一个缺点（慢）变成了一个迷人的 UI 效果。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 220" role="img" aria-label="非流式要等全部生成完才显示；流式在第一个 chunk 生成后立即开始显示">
+  <text class="ttl" x="20" y="30">非流式</text>
+  <rect class="bx-d" x="120" y="14" width="470" height="26" rx="5"/>
+  <text class="sm" x="355" y="32" text-anchor="middle">用户看着空白页面等待……</text>
+  <rect class="fill-g" x="594" y="14" width="146" height="26" rx="5"/>
+  <text class="sm wt" x="667" y="32" text-anchor="middle">整段一次出现</text>
+
+  <text class="ttl" x="20" y="90">流式</text>
+  <rect class="fill-g" x="120"  y="74" width="70" height="26" rx="5"/>
+  <rect class="fill-g" x="196"  y="74" width="70" height="26" rx="5"/>
+  <rect class="fill-g" x="272"  y="74" width="70" height="26" rx="5"/>
+  <rect class="fill-g" x="348"  y="74" width="70" height="26" rx="5"/>
+  <rect class="fill-g" x="424"  y="74" width="70" height="26" rx="5"/>
+  <rect class="fill-g" x="500"  y="74" width="70" height="26" rx="5"/>
+  <rect class="fill-g" x="576"  y="74" width="70" height="26" rx="5"/>
+  <rect class="fill-g" x="652"  y="74" width="88" height="26" rx="5"/>
+  <text class="sm wt" x="155" y="92" text-anchor="middle">The</text>
+  <text class="sm wt" x="231" y="92" text-anchor="middle">Beatles</text>
+  <text class="sm wt" x="307" y="92" text-anchor="middle">were</text>
+  <text class="sm wt" x="383" y="92" text-anchor="middle">an</text>
+  <text class="sm wt" x="459" y="92" text-anchor="middle">English</text>
+  <text class="sm wt" x="535" y="92" text-anchor="middle">rock</text>
+  <text class="sm wt" x="611" y="92" text-anchor="middle">band</text>
+  <text class="sm wt" x="696" y="92" text-anchor="middle">…</text>
+
+  <path class="ln" d="M120 130 H740" marker-end="url(#ar)"/>
+  <text class="sm" x="112" y="134" text-anchor="end">发出请求</text>
+  <text class="sm" x="740" y="150" text-anchor="end">生成完毕（总耗时一样）</text>
+  <path class="ln-a" d="M155 178 V104" marker-end="url(#ar-a)"/>
+  <text class="lbl on-a" x="165" y="190">流式：不到一秒就看到第一个词 —— 感觉快多了</text>
+</svg>
+<figcaption>图 2-4　总耗时相同，但流式让用户<strong>立刻</strong>看到进展</figcaption>
+</figure>
+
+<p>
+  原理其实很自然：LLM 本来就是逐 token 生成的（第 1 章）。
+  <strong>流式就是 token 一生成出来就立刻打包成一个个小块（chunk）发回去</strong>，而不是攒到最后。
+</p>
+
+<h3>服务端：两处改动</h3>
+
+<p>第一处，调用 <code>generate</code> 时加上 <code>stream: true</code>。这时它不再返回完整结果，而是返回一个<strong>异步迭代器</strong>：</p>
+
+<div class="code" data-lang="js">
+<pre>
+const streamIterator = await ollama.generate({
+  model: 'llama3.2',
+  prompt: body.question,
+  stream: true                        // ← 关键：开启流式
+});
+</pre>
+</div>
+
+<p>第二处，用 <code>for await</code> 逐块读取，每读到一块就用 <code>response.write</code> 立刻发给客户端，最后 <code>response.end()</code> 收尾：</p>
+
+<div class="code" data-lang="js">
+<pre>
+for await (const chunk of streamIterator) {   // 模型每生成一块，循环体执行一次
+  response.write(chunk.response);             // 马上写回客户端
+}
+response.end();                               // 全部结束，关闭响应
+</pre>
+</div>
+
+<h3>CORS 与中间件</h3>
+
+<p>
+  前端（Vite 开发服务器，<code>localhost:5173</code>）和后端（<code>localhost:8000</code>）端口不同，浏览器认为它们是<strong>不同的源（origin）</strong>。
+  出于安全考虑，浏览器会拦截跨源请求，除非服务器用特殊的响应头明确表示“我允许”。这套规则叫 <strong>CORS（跨域资源共享）</strong>。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 200" role="img" aria-label="CORS：浏览器页面来自 5173 端口，请求 8000 端口的服务，服务必须返回允许跨域的响应头">
+  <rect class="bx" x="20" y="40" width="200" height="120" rx="12"/>
+  <text class="ttl" x="120" y="66" text-anchor="middle">浏览器</text>
+  <rect class="bx-a" x="40" y="80" width="160" height="60" rx="8"/>
+  <text class="lbl on-a" x="120" y="104" text-anchor="middle">React 页面</text>
+  <text class="mono" x="120" y="124" text-anchor="middle">localhost:5173</text>
+
+  <path class="ln" d="M222 80 H518" marker-end="url(#ar)"/>
+  <text class="mono" x="370" y="72" text-anchor="middle">POST localhost:8000</text>
+  <path class="ln-g" d="M518 128 H222" marker-end="url(#ar-g)"/>
+  <text class="mono on-g" x="370" y="148" text-anchor="middle">Access-Control-Allow-Origin: *</text>
+  <text class="sm" x="370" y="168" text-anchor="middle">没有这个头 → 浏览器直接拦截，报 CORS 错误</text>
+
+  <rect class="bx-b" x="520" y="40" width="220" height="120" rx="12"/>
+  <text class="ttl on-b" x="630" y="66" text-anchor="middle">Express 服务</text>
+  <text class="mono" x="630" y="88" text-anchor="middle">localhost:8000</text>
+  <text class="sm" x="630" y="118" text-anchor="middle">app.use(cors())</text>
+  <text class="sm" x="630" y="136" text-anchor="middle">自动加上允许跨域的头</text>
+</svg>
+<figcaption>图 2-5　端口不同就算跨域。CORS 错误常常让“代码明明没问题”的请求莫名失败</figcaption>
+</figure>
+
+<p>
+  解决办法是用 Express 的<strong>中间件（middleware）</strong>。中间件是在你的处理函数<strong>之前</strong>运行的函数，
+  可以对请求和响应做加工。我们需要两个：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 130" role="img" aria-label="请求依次经过 cors 中间件、express.json 中间件，最后到达路由处理函数">
+  <rect class="bx" x="20" y="40" width="110" height="50" rx="8"/><text class="lbl" x="75" y="70" text-anchor="middle">HTTP 请求</text>
+  <path class="ln" d="M132 65 H176" marker-end="url(#ar)"/>
+  <rect class="bx-b" x="178" y="30" width="160" height="70" rx="10"/>
+  <text class="mono on-b" x="258" y="58" text-anchor="middle">cors()</text>
+  <text class="sm" x="258" y="80" text-anchor="middle">加跨域响应头</text>
+  <path class="ln" d="M340 65 H384" marker-end="url(#ar)"/>
+  <rect class="bx-b" x="386" y="30" width="160" height="70" rx="10"/>
+  <text class="mono on-b" x="466" y="58" text-anchor="middle">express.json()</text>
+  <text class="sm" x="466" y="80" text-anchor="middle">JSON → request.body</text>
+  <path class="ln" d="M548 65 H592" marker-end="url(#ar)"/>
+  <rect class="bx-a" x="594" y="30" width="146" height="70" rx="10"/>
+  <text class="ttl on-a" x="667" y="58" text-anchor="middle">你的处理函数</text>
+  <text class="mono" x="667" y="80" text-anchor="middle">app.post('/')</text>
+</svg>
+<figcaption>图 2-6　中间件就像流水线上的工位，请求依次经过它们，最后才到你的代码</figcaption>
+</figure>
+
+<div class="box warn">
+  <div class="t">&#9888; 生产环境别照抄</div>
+  <p>本书所有示例都用了<strong>最宽松</strong>的 CORS 配置（允许任何来源），只是为了方便学习。上线前务必只允许你自己的前端域名。</p>
+</div>
+
+<h3>完整的流式服务</h3>
+
+<div class="code" data-lang="bash">
+<pre>
+npm install cors@2.8.5
+</pre>
+</div>
+
+<div class="code" data-lang="js" data-file="part1/getting_started/section2/server.mjs">
+<pre>
+import express from "express";
+import { Ollama } from "ollama";
+import cors from "cors";
+
+const app = express();
+
+app.use(cors());                    // ❶ 中间件：处理跨域
+app.use(express.json());            // ❶ 中间件：解析 JSON 请求体
+
+const ollama = new Ollama();
+
+app.post('/', async (request, response) =&gt; {   // 改成 POST，才能在 body 里带问题
+  response.type('text/plain');
+
+  const body = request.body;        // ❷ 已被 express.json() 解析好
+
+  const streamIterator = await ollama.generate({
+    model: 'llama3.2',
+    prompt: body.question,          // ❸ 用户的问题就是 prompt
+    stream: true
+  });
+
+  for await (const chunk of streamIterator) {
+    response.write(chunk.response);
+  }
+
+  response.end();
+});
+
+app.listen(8000, () =&gt; {
+  console.log(`Server is running on port 8000`);
+});
+</pre>
+</div>
+
+<p>客户端发来的请求体长这样：</p>
+<div class="code" data-lang="json">
+<pre>
+{ "question": "Can you tell me about the Beatles in 500 words or less?" }
+</pre>
+</div>
+
+<p>用 curl 测试。注意 <code>-N</code> 参数：它关闭 curl 的输出缓冲，否则你看不到“逐字出现”的效果：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+curl -N -X POST -H "Content-Type: application/json" -d \
+  '{"question": "Can you tell me about the Beatles in 500 words or less?"}' \
+  http://localhost:8000
+</pre>
+</div>
+
+<h2 id="client">第三步：前端读取流</h2>
+
+<p>
+  浏览器的 <code>fetch</code> 有个很少人知道的能力：响应体 <code>response.body</code> 是一个 <strong>ReadableStream</strong>，
+  可以一块一块地读，不必等全部下载完。下面这张图把整条“流水管道”串了起来：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 290" role="img" aria-label="流式数据从模型经过服务器到浏览器的完整管道">
+  <text class="sm" x="20" y="22">服务端（Node.js）</text>
+  <rect class="bx-p" x="20" y="32" width="130" height="56" rx="10"/>
+  <text class="ttl on-p" x="85" y="56" text-anchor="middle">Llama 3.2</text>
+  <text class="sm" x="85" y="74" text-anchor="middle">逐 token 生成</text>
+  <path class="ln" d="M152 60 H200" marker-end="url(#ar)"/>
+  <rect class="bx-b" x="202" y="32" width="170" height="56" rx="10"/>
+  <text class="mono on-b" x="287" y="56" text-anchor="middle">for await (chunk)</text>
+  <text class="sm" x="287" y="74" text-anchor="middle">异步迭代器</text>
+  <path class="ln" d="M374 60 H422" marker-end="url(#ar)"/>
+  <rect class="bx-a" x="424" y="32" width="170" height="56" rx="10"/>
+  <text class="mono on-a" x="509" y="56" text-anchor="middle">response.write()</text>
+  <text class="sm" x="509" y="74" text-anchor="middle">立刻发出这一块</text>
+
+  <path class="ln-a" d="M596 60 H690 V150" marker-end="url(#ar-a)"/>
+  <text class="sm on-a" x="700" y="110">HTTP</text>
+  <text class="sm on-a" x="700" y="126">分块传输</text>
+
+  <text class="sm" x="20" y="146">浏览器（React）</text>
+  <rect class="bx-b" x="560" y="154" width="180" height="56" rx="10"/>
+  <text class="mono on-b" x="650" y="178" text-anchor="middle">response.body</text>
+  <text class="sm" x="650" y="196" text-anchor="middle">字节流 ReadableStream</text>
+  <path class="ln" d="M558 182 H510" marker-end="url(#ar)"/>
+  <rect class="bx-b" x="330" y="154" width="178" height="56" rx="10"/>
+  <text class="mono on-b" x="419" y="178" text-anchor="middle">TextDecoderStream</text>
+  <text class="sm" x="419" y="196" text-anchor="middle">字节 → 文字</text>
+  <path class="ln" d="M328 182 H280" marker-end="url(#ar)"/>
+  <rect class="bx-b" x="120" y="154" width="158" height="56" rx="10"/>
+  <text class="mono on-b" x="199" y="178" text-anchor="middle">reader.read()</text>
+  <text class="sm" x="199" y="196" text-anchor="middle">循环读每一块</text>
+  <path class="ln" d="M199 212 V238" marker-end="url(#ar)"/>
+  <rect class="bx-g" x="60" y="240" width="280" height="40" rx="8"/>
+  <text class="lbl on-g" x="200" y="265" text-anchor="middle">拼到已有文本上 → setState → 页面刷新</text>
+</svg>
+<figcaption>图 2-7　从模型到屏幕的完整流式管道</figcaption>
+</figure>
+
+<div class="code" data-lang="jsx" data-file="part1/client/src/App.jsx（节选）">
+<pre>
+let llmResponseProgress = '';
+
+const renderResponseChunk = (chunk) =&gt; {
+  llmResponseProgress += chunk || '';        // 把新的一块拼到后面
+  if (llmResponseProgress) {
+    setLlmResponse(llmResponseProgress);     // 更新 React 状态，页面自动重绘
+  }
+};
+
+const fetchData = async () =&gt; {
+  setLlmResponse('Please be patient, calling a local LLM can take some time...');
+
+  const response = await fetch('http://localhost:8000', {
+    method: 'POST',
+    headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question })
+  });
+
+  llmResponseProgress = '';
+
+  const reader = response.body
+    .pipeThrough(new TextDecoderStream())    // ❶ 字节流 → 文本流
+    .getReader();
+
+  while (true) {
+    const { done, value } = await reader.read();
+    renderResponseChunk(value);              // ❷ 每读到一块就渲染
+    if (done) return;
+  }
+};
+</pre>
+</div>
+
+<p>LLM 很喜欢输出 Markdown（标题、列表、代码块），所以前端用 <code>ReactMarkdown</code> 来显示：</p>
+
+<div class="code" data-lang="jsx">
+<pre>
+&lt;ReactMarkdown className="llm-response"&gt;
+  {llmResponse}
+&lt;/ReactMarkdown&gt;
+</pre>
+</div>
+
+<div class="code" data-lang="bash">
+<pre>
+cd part1/client
+npm install
+npm run dev        # 打开终端里提示的地址（通常是 http://localhost:5173）
+</pre>
+</div>
+
+<h2 id="summary">小结</h2>
+
+<p>你完成了一个能把 LLM 回答流式推送到网页的完整应用。它是后面所有章节的基础。</p>
+
+<div class="tw"><table>
+  <tr><th>场景</th><th>API</th></tr>
+  <tr><td>调用 LLM</td><td><code>ollama.generate({ model, prompt })</code></td></tr>
+  <tr><td>开启流式</td><td>加 <code>stream: true</code>，返回值变成异步迭代器</td></tr>
+  <tr><td>服务端逐块写回</td><td><code>response.write(chunk)</code> + <code>response.end()</code></td></tr>
+  <tr><td>客户端读流</td><td><code>response.body.pipeThrough(new TextDecoderStream()).getReader()</code></td></tr>
+  <tr><td>允许跨域</td><td><code>app.use(cors())</code></td></tr>
+  <tr><td>解析 JSON 请求体</td><td><code>app.use(express.json())</code></td></tr>
+</table></div>
+
+<div class="exercise">
+  <h3>动手练习</h3>
+  <ol>
+    <li>看看 <code>Ollama</code> 类上的 <code>chat</code> 方法。改造示例去调用它，把 prompt 放进一个 <strong>messages 数组</strong>里传入（第 6 章会详细讲 messages）。</li>
+    <li>在流式循环里 <code>console.log(chunk)</code> 打印整个对象，观察 Ollama 随每个 chunk 返回了哪些字段。它们的用途在后面章节会慢慢清晰。</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

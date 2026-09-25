@@ -1,0 +1,599 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 14 章 · 用工具扩展智能体 — AI 开发者指南</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="14">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 14 章 · 工具与 MCP</span>
+<h1>用工具扩展智能体</h1>
+<p class="lede">
+  上一章的 Agent 能搜索互联网，但它仍然只能接触<strong>公开</strong>信息。真正的能动性，意味着能读写你的私有数据库、保存文件、调用内部系统。
+  这一章我们先用 <code>@tool</code> 给 Agent 写自定义工具，再用 <strong>MCP（Model Context Protocol）</strong> 把工具做成任何 AI 都能接入的标准服务。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>用 smolagents 的 <code>@tool</code> 装饰器写自定义工具，掌握写好工具的四条原则</li>
+    <li>理解 MCP 要解决的问题，以及 hosts / clients / servers 架构</li>
+    <li>认识 MCP server 的三类能力：<strong>Tools、Resources、Prompts</strong></li>
+    <li>用 FastMCP 写一个 MCP server，用 Postman 测试，接入 Claude Desktop</li>
+    <li>区分 <strong>stdio</strong> 和 <strong>HTTP</strong> 两种传输方式，用 Pydantic 定义复杂的工具输入输出</li>
+  </ul>
+</div>
+
+<div class="box note">
+  <div class="t">&#128194; 对应代码：<code>part5/building-an-mcp-server/</code></div>
+  <ul>
+    <li><code>mySpecialCalculator-mcp-server.py</code> —— 最小的 MCP server</li>
+    <li><code>myExpenseManager-mcp-server.py</code> —— 带 Pydantic schema、连接 MongoDB 的 MCP server</li>
+    <li><code>myExpenseManager-mcp-client.py</code> / <code>mongo-client.py</code> —— 客户端与数据库连接</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="tool">写一个自定义工具</h2>
+
+<p>给 Agent 一个新任务：</p>
+
+<div class="prompt">
+  <div class="h">任务</div>
+  <div class="b">Find the latest stock price for Apple, Google and Amazon. Convert that into a table and <mark>save it to a file.</mark></div>
+</div>
+
+<p>查股价可以靠搜索，但“保存到文件”这种<strong>动作</strong>，Agent 和 LLM 天生都不会。我们得给它一个工具 —— 其实就是一个普通的 Python 函数：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 250" role="img" aria-label="工具是 Agent 通往私有资源和动作的安全通道：公开信息靠搜索，私有数据和动作要靠自定义工具">
+  <rect class="bx-a" x="280" y="90" width="200" height="70" rx="12"/>
+  <text class="ttl on-a" x="380" y="120" text-anchor="middle">AI Agent</text>
+  <text class="sm" x="380" y="140" text-anchor="middle">LLM 大脑</text>
+
+  <rect class="bx-b" x="20" y="20" width="200" height="56" rx="10"/><text class="lbl on-b" x="120" y="44" text-anchor="middle">公开互联网</text><text class="sm" x="120" y="62" text-anchor="middle">第 13 章：搜索、读网页</text>
+  <path class="ln-b" d="M278 110 L222 60" marker-end="url(#ar-b)"/>
+
+  <rect class="bx-g" x="540" y="14" width="200" height="46" rx="10"/><text class="lbl on-g" x="640" y="42" text-anchor="middle">&#128190; 本地文件</text>
+  <rect class="bx-g" x="540" y="72" width="200" height="46" rx="10"/><text class="lbl on-g" x="640" y="100" text-anchor="middle">&#128451; 私有数据库</text>
+  <rect class="bx-g" x="540" y="130" width="200" height="46" rx="10"/><text class="lbl on-g" x="640" y="158" text-anchor="middle">&#127970; 内部系统 / CRM</text>
+  <path class="ln-g" d="M482 110 L536 40" marker-end="url(#ar-g)"/>
+  <path class="ln-g" d="M482 122 L536 96" marker-end="url(#ar-g)"/>
+  <path class="ln-g" d="M482 136 L536 152" marker-end="url(#ar-g)"/>
+  <text class="sm on-g" x="506" y="196" text-anchor="middle">自定义工具 = 受控的安全通道</text>
+  <text class="sm" x="380" y="232" text-anchor="middle">LLM 碰不到这些资源 —— 除非你写一个工具，只开放你允许的那部分能力</text>
+</svg>
+<figcaption>图 14-1　工具把 Agent 从“扩展版聊天界面”变成能真正做事的“行动者”</figcaption>
+</figure>
+
+<div class="code" data-lang="python">
+<pre>
+from smolagents import CodeAgent, tool
+
+@tool                                     # ❶ 装饰器：把函数注册成 Agent 能用的工具
+def save_file(data: str) -&gt; None:         # ❷ 描述性的名字 + 精确的类型提示
+    """                                   # ❸ docstring：给 LLM 看的说明书
+    Save the data to a file
+
+    Args:
+        data: The data to save to the file
+
+    """
+    with open("investments.txt", "w") as f:    # ❹ 真正干活的逻辑
+        f.write(data)
+
+agent = CodeAgent(
+    tools=[save_file],                    # ❺ 把工具交给 Agent
+    model=model,
+    add_base_tools=True
+)
+</pre>
+</div>
+
+<p>Agent 并不读你的函数实现，它是通过<strong>函数名、类型提示和 docstring</strong> 来理解这个工具能干什么、需要什么参数：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 240" role="img" aria-label="@tool 装饰器把函数名、类型提示和 docstring 转成 LLM 能看到的工具说明">
+  <rect class="bx" x="20" y="20" width="330" height="200" rx="12"/>
+  <text class="mono on-p" x="36" y="46">@tool</text>
+  <text class="mono" x="36" y="70">def <tspan class="on-a" font-weight="700">save_file</tspan>(<tspan class="on-b">data: str</tspan>) -&gt; <tspan class="on-b">None</tspan>:</text>
+  <rect class="bx-g" x="44" y="84" width="290" height="96" rx="6"/>
+  <text class="mono on-g" x="54" y="104">"""Save the data to a file</text>
+  <text class="mono on-g" x="54" y="126">Args:</text>
+  <text class="mono on-g" x="54" y="146">  data: The data to save</text>
+  <text class="mono on-g" x="54" y="166">        to the file"""</text>
+  <text class="mono" x="36" y="204">    with open(…) as f: …</text>
+  <text class="sm" x="210" y="204">← LLM 看不到</text>
+
+  <path class="ln-p" d="M352 110 H414" marker-end="url(#ar-p)"/>
+  <rect class="bx-p" x="416" y="20" width="324" height="200" rx="12"/>
+  <text class="ttl on-p" x="432" y="46">LLM 看到的工具说明</text>
+  <text class="sm" x="432" y="76">名称：<tspan class="on-a" font-weight="700">save_file</tspan></text>
+  <text class="sm" x="432" y="100">用途：<tspan class="on-g">Save the data to a file</tspan></text>
+  <text class="sm" x="432" y="124">参数：<tspan class="on-b">data（string）</tspan> —</text>
+  <text class="sm on-g" x="470" y="142">The data to save to the file</text>
+  <text class="sm" x="432" y="166">返回：<tspan class="on-b">None</tspan></text>
+  <text class="sm" x="432" y="200">→ LLM 据此决定何时调用、传什么参数</text>
+</svg>
+<figcaption>图 14-2　docstring 和类型提示不只是注释，它们是 LLM 理解自身能力的“说明书”</figcaption>
+</figure>
+
+<h3>写好工具的四条原则</h3>
+
+<div class="cards">
+  <div class="card"><span class="ic">&#127991;</span><h4>描述性的函数名</h4><p><code>save_file</code> 一看就懂，<code>f1</code> 让 LLM 去猜。</p></div>
+  <div class="card"><span class="ic">&#128288;</span><h4>精确的类型提示</h4><p>所有参数和返回值都加类型，框架靠它们理解输入输出。</p></div>
+  <div class="card"><span class="ic">&#128214;</span><h4>完整的 docstring</h4><p>这是 LLM 主要的说明书：工具干什么、什么时候用。</p></div>
+  <div class="card"><span class="ic">&#9999;</span><h4>逐个说明参数</h4><p>用平实的语言说明每个参数要传什么。</p></div>
+</div>
+
+<h2 id="reuse">工具多了之后：复用的难题</h2>
+
+<p>
+  Agent 越来越多，工具也越来越多。每做一个新 Agent 就把数据库查询、网页抓取工具复制一遍？既浪费时间，也难以维护。
+  打包成库可以缓解，但每个框架的工具接口都不一样。更根本的办法是一个<strong>标准协议</strong>：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 290" role="img" aria-label="没有标准时，每个 Agent 和每个工具之间都要写专门的连接代码，N 乘 M 条；有了 MCP，每方只需实现一次协议，N 加 M">
+  <text class="ttl on-r" x="190" y="22" text-anchor="middle">没有标准：N × M 个连接器</text>
+  <rect class="bx" x="30" y="46" width="100" height="34" rx="6"/><text class="sm" x="80" y="68" text-anchor="middle">Agent A</text>
+  <rect class="bx" x="30" y="126" width="100" height="34" rx="6"/><text class="sm" x="80" y="148" text-anchor="middle">Agent B</text>
+  <rect class="bx" x="30" y="206" width="100" height="34" rx="6"/><text class="sm" x="80" y="228" text-anchor="middle">Agent C</text>
+  <rect class="bx" x="250" y="46" width="100" height="34" rx="6"/><text class="sm" x="300" y="68" text-anchor="middle">数据库</text>
+  <rect class="bx" x="250" y="126" width="100" height="34" rx="6"/><text class="sm" x="300" y="148" text-anchor="middle">GitHub</text>
+  <rect class="bx" x="250" y="206" width="100" height="34" rx="6"/><text class="sm" x="300" y="228" text-anchor="middle">AWS</text>
+  <g class="ln-r">
+    <path d="M132 63 L248 63"/><path d="M132 63 L248 143"/><path d="M132 63 L248 223"/>
+    <path d="M132 143 L248 63"/><path d="M132 143 L248 143"/><path d="M132 143 L248 223"/>
+    <path d="M132 223 L248 63"/><path d="M132 223 L248 143"/><path d="M132 223 L248 223"/>
+  </g>
+  <text class="sm on-r" x="190" y="272" text-anchor="middle">3 × 3 = 9 份定制代码</text>
+
+  <path class="ln-d" d="M380 16 V280"/>
+
+  <text class="ttl on-g" x="570" y="22" text-anchor="middle">有了 MCP：N + M</text>
+  <rect class="bx" x="410" y="46" width="100" height="34" rx="6"/><text class="sm" x="460" y="68" text-anchor="middle">Agent A</text>
+  <rect class="bx" x="410" y="126" width="100" height="34" rx="6"/><text class="sm" x="460" y="148" text-anchor="middle">Agent B</text>
+  <rect class="bx" x="410" y="206" width="100" height="34" rx="6"/><text class="sm" x="460" y="228" text-anchor="middle">Agent C</text>
+  <rect class="bx-a" x="540" y="40" width="44" height="206" rx="10"/>
+  <text class="ttl on-a" x="562" y="148" text-anchor="middle" transform="rotate(-90 562 143)">MCP</text>
+  <rect class="bx" x="630" y="46" width="100" height="34" rx="6"/><text class="sm" x="680" y="68" text-anchor="middle">数据库</text>
+  <rect class="bx" x="630" y="126" width="100" height="34" rx="6"/><text class="sm" x="680" y="148" text-anchor="middle">GitHub</text>
+  <rect class="bx" x="630" y="206" width="100" height="34" rx="6"/><text class="sm" x="680" y="228" text-anchor="middle">AWS</text>
+  <g class="ln-g">
+    <path d="M512 63 H538"/><path d="M512 143 H538"/><path d="M512 223 H538"/>
+    <path d="M586 63 H628"/><path d="M586 143 H628"/><path d="M586 223 H628"/>
+  </g>
+  <text class="sm on-g" x="570" y="272" text-anchor="middle">3 + 3 = 6 份，而且都是同一个标准</text>
+</svg>
+<figcaption>图 14-3　MCP 就像 AI 世界的 USB 接口：大家都说同一种语言</figcaption>
+</figure>
+
+<h2 id="mcp">MCP 是什么</h2>
+
+<p>
+  <a href="https://modelcontextprotocol.io">Model Context Protocol</a> 定义了一套标准规则和一门“通用语言”：
+  任何 Agent 都能用它<strong>发现、理解、调用</strong>任何遵守标准的工具和数据源；同时它也规定了工具和数据源该如何描述自己。
+  它采用熟悉的<strong>客户端-服务器</strong>模型：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 300" role="img" aria-label="MCP 架构：Host 应用内部有多个 MCP client，每个 client 与一个 MCP server 保持一对一连接，server 再连接实际的数据源和服务">
+  <rect class="bx-a" x="20" y="20" width="300" height="260" rx="14"/>
+  <text class="ttl on-a" x="170" y="46" text-anchor="middle">MCP Host（宿主应用）</text>
+  <text class="sm" x="170" y="66" text-anchor="middle">Claude Desktop、IDE、你的 Agent……</text>
+  <rect class="bx-p" x="40" y="80" width="120" height="44" rx="8"/><text class="lbl on-p" x="100" y="107" text-anchor="middle">LLM</text>
+  <rect class="bx-b" x="180" y="84" width="120" height="44" rx="8"/><text class="sm on-b" x="240" y="111" text-anchor="middle">MCP Client 1</text>
+  <rect class="bx-b" x="180" y="144" width="120" height="44" rx="8"/><text class="sm on-b" x="240" y="171" text-anchor="middle">MCP Client 2</text>
+  <rect class="bx-b" x="180" y="204" width="120" height="44" rx="8"/><text class="sm on-b" x="240" y="231" text-anchor="middle">MCP Client 3</text>
+  <path class="ln" d="M162 102 H176"/><path class="ln" d="M100 126 V226 H176"/><path class="ln" d="M100 166 H176"/>
+
+  <path class="ln-a" d="M302 106 H420" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M302 166 H420" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M302 226 H420" marker-end="url(#ar-a)"/>
+  <text class="sm on-a" x="362" y="98" text-anchor="middle">一对一</text>
+  <text class="sm" x="362" y="258" text-anchor="middle">MCP 协议</text>
+  <text class="sm" x="362" y="274" text-anchor="middle">（stdio / HTTP）</text>
+
+  <rect class="bx-g" x="422" y="84" width="170" height="44" rx="8"/><text class="sm on-g" x="507" y="111" text-anchor="middle">Server：特殊计算器</text>
+  <rect class="bx-g" x="422" y="144" width="170" height="44" rx="8"/><text class="sm on-g" x="507" y="171" text-anchor="middle">Server：费用管理器</text>
+  <rect class="bx-g" x="422" y="204" width="170" height="44" rx="8"/><text class="sm on-g" x="507" y="231" text-anchor="middle">Server：AWS</text>
+  <path class="ln" d="M594 166 H630" marker-end="url(#ar)"/>
+  <path class="ln" d="M594 226 H630" marker-end="url(#ar)"/>
+  <rect class="bx" x="632" y="144" width="108" height="44" rx="8"/><text class="sm" x="686" y="171" text-anchor="middle">MongoDB</text>
+  <rect class="bx" x="632" y="204" width="108" height="44" rx="8"/><text class="sm" x="686" y="231" text-anchor="middle">AWS API</text>
+</svg>
+<figcaption>图 14-4　Host 管理连接，Client 负责一对一通信，Server 暴露能力</figcaption>
+</figure>
+
+<div class="tw"><table>
+  <tr><th>角色</th><th>是什么</th></tr>
+  <tr><td><strong>Host（宿主）</strong></td><td>主 AI 应用，比如 LLM 桌面应用或 IDE，负责发起和管理连接</td></tr>
+  <tr><td><strong>Client（客户端）</strong></td><td>嵌在 Host 里，与一个 Server 保持一对一连接，在 Host/LLM 和 Server 之间传话</td></tr>
+  <tr><td><strong>Server（服务器）</strong></td><td>外部程序或服务，向客户端提供特定的能力和上下文</td></tr>
+</table></div>
+
+<h3>MCP Server 能提供的三类东西</h3>
+
+<div class="cards">
+  <div class="card"><span class="ic">&#128295;</span><h4>Tools 工具</h4><p>可执行的函数。LLM 可以调用它们来执行动作、访问外部系统 —— 给 AI 用的“函数”。</p></div>
+  <div class="card"><span class="ic">&#128196;</span><h4>Resources 资源</h4><p>可读取的数据或动态内容，提供给 LLM 作为参考，不一定执行动作。</p></div>
+  <div class="card"><span class="ic">&#128221;</span><h4>Prompts 提示</h4><p>可复用的 prompt 模板和结构化工作流，把常见交互标准化。</p></div>
+</div>
+
+<h3>两种传输方式</h3>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 230" role="img" aria-label="stdio 传输：客户端和服务器在同一台机器上通过标准输入输出通信，只能单用户；HTTP 传输：服务器部署在网络上，多个客户端可以远程连接">
+  <text class="ttl" x="190" y="22" text-anchor="middle">stdio（标准输入/输出）</text>
+  <rect class="bx-d" x="30" y="36" width="320" height="140" rx="12"/>
+  <text class="sm" x="44" y="56">你的电脑</text>
+  <rect class="bx-a" x="50" y="80" width="110" height="60" rx="8"/><text class="lbl on-a" x="105" y="106" text-anchor="middle">Client</text><text class="sm" x="105" y="124" text-anchor="middle">Claude Desktop</text>
+  <rect class="bx-g" x="220" y="80" width="110" height="60" rx="8"/><text class="lbl on-g" x="275" y="106" text-anchor="middle">Server</text><text class="sm" x="275" y="124" text-anchor="middle">子进程</text>
+  <path class="ln" d="M162 100 H216" marker-end="url(#ar)"/><path class="ln" d="M216 122 H164" marker-end="url(#ar)"/>
+  <text class="sm" x="190" y="200" text-anchor="middle">本地、单用户、简单高效</text>
+  <text class="mono" x="190" y="220" text-anchor="middle">mcp.run()</text>
+
+  <text class="ttl" x="570" y="22" text-anchor="middle">Streamable HTTP</text>
+  <rect class="bx-b" x="400" y="40" width="100" height="36" rx="7"/><text class="sm" x="450" y="63" text-anchor="middle">Client A</text>
+  <rect class="bx-b" x="400" y="88" width="100" height="36" rx="7"/><text class="sm" x="450" y="111" text-anchor="middle">Client B</text>
+  <rect class="bx-b" x="400" y="136" width="100" height="36" rx="7"/><text class="sm" x="450" y="159" text-anchor="middle">Client C</text>
+  <path class="ln" d="M502 58 L596 98" marker-end="url(#ar)"/><path class="ln" d="M502 106 H594" marker-end="url(#ar)"/><path class="ln" d="M502 154 L596 114" marker-end="url(#ar)"/>
+  <text class="sm" x="548" y="70">HTTP POST</text>
+  <rect class="bx-g" x="598" y="70" width="142" height="72" rx="10"/><text class="lbl on-g" x="669" y="98" text-anchor="middle">Server</text><text class="sm" x="669" y="116" text-anchor="middle">云端 / 远程</text><text class="sm" x="669" y="132" text-anchor="middle">SSE 流式回推</text>
+  <text class="sm" x="570" y="200" text-anchor="middle">联网、多客户端、集中部署</text>
+  <text class="mono" x="570" y="220" text-anchor="middle">mcp.run(transport="http", …)</text>
+</svg>
+<figcaption>图 14-5　stdio 适合只给自己用的本地工具；HTTP 适合共享的网络服务</figcaption>
+</figure>
+
+<div class="box key">
+  <div class="t">&#128273; 为什么 MCP 很重要</div>
+  <p>
+    MCP server 已经覆盖了数据库、支付、搜索、可观测性等几乎所有技术领域。它让<strong>不懂技术的人</strong>也能和复杂系统“对话”。
+    一位经理可以直接问：<em>“过去三个季度的 AWS 花费是多少？和运行中的服务器数量画在一张图上。”</em>
+    AI 通过 AWS 的 MCP server 拿到账单和服务器历史，拼成结果。以前要花几小时登录控制台、到处翻找的事，几分钟就完成了。
+  </p>
+</div>
+
+<h2 id="server">动手：第一个 MCP Server</h2>
+
+<p>我们用 <strong>FastMCP</strong>（书中基于 2.12.4）写一个“特殊计算器”，它的四则运算都带一点<strong>小把戏</strong>：</p>
+
+<div class="tw"><table>
+  <tr><th>工具</th><th>实际计算</th><th>例：10 和 10</th></tr>
+  <tr><td><code>add(num1, num2)</code></td><td><code>num1 + num2 + num2</code></td><td>30</td></tr>
+  <tr><td><code>subtract(num1, num2)</code></td><td><code>num1 - num2 - num2</code></td><td>-10</td></tr>
+  <tr><td><code>multiply(num1, num2)</code></td><td><code>num1 × num2 × num2</code></td><td>1000</td></tr>
+  <tr><td><code>divide(num1, num2)</code></td><td><code>num1 / num2 / num2</code></td><td>0.1</td></tr>
+</table></div>
+
+<div class="box eg">
+  <div class="t">&#129313; 为什么故意做个“傻”计算器？</div>
+  <p>学新东西的好办法就是做点简单甚至傻乎乎的东西。结果“不正常”，你就能立刻确认：<strong>是 AI 真的调用了你的工具，而不是它自己心算的</strong>。</p>
+</div>
+
+<div class="code" data-lang="python" data-file="part5/building-an-mcp-server/mySpecialCalculator-mcp-server.py">
+<pre>
+from fastmcp import FastMCP
+
+mcp = FastMCP(
+    name="My Special Calculator",              # ❶ 名字：AI 理解这个 server 用途的第一线索
+    instructions="""                           # ❷ 说明：相当于 server 的 README
+    This is a special calculator that does some special things.
+    It can add, subtract, multiply, and divide in some special ways.
+    """,
+)
+
+
+@mcp.tool                                      # ❸ 注册为 MCP 工具
+def add(num1: int, num2: int) -&gt; int:          #    类型提示 → 自动生成 JSON schema
+    return num1 + num2 + num2
+
+
+@mcp.tool
+def subtract(num1: int, num2: int) -&gt; int:
+    return num1 - num2 - num2
+
+
+@mcp.tool
+def multiply(num1: int, num2: int) -&gt; int:
+    return num1 * num2 * num2
+
+
+@mcp.tool
+def divide(num1: int, num2: int) -&gt; int:
+    return num1 / num2 / num2
+
+
+if __name__ == "__main__":
+    mcp.run()                                  # 默认使用 stdio 传输
+</pre>
+</div>
+
+<ul>
+  <li><strong><code>name</code></strong>：像对待变量名一样认真。<code>mcp_server</code> 逼 AI 去猜，<code>PayrollReportGenerator</code> 一眼就懂。</li>
+  <li><strong><code>instructions</code></strong>：server 的公开文档，第一次发现它的用户（和 AI）会先看到这段话。</li>
+  <li><strong>类型提示</strong>：FastMCP 用它们生成工具输入输出的 JSON schema，LLM 靠 schema 正确组织参数。</li>
+</ul>
+
+<div class="code" data-lang="bash">
+<pre>
+python mySpecialCalculator-mcp-server.py
+# Starting MCP server 'My Special Calculator' with transport 'stdio'
+</pre>
+</div>
+
+<h3>用 Postman 测试</h3>
+
+<ol class="steps">
+  <li><strong>新建请求，类型选 MCP</strong>不是普通的 HTTP 请求。</li>
+  <li><strong>选择 stdio，填写启动命令</strong>用<strong>虚拟环境里的 Python</strong>运行脚本，例如 <code>path/.venv/bin/python path/mySpecialCalculator-mcp-server.py</code>，避免和系统 Python 的包冲突。</li>
+  <li><strong>点 Connect</strong>连接成功后，立刻能看到 server 暴露的四个工具。</li>
+  <li><strong>点击工具，填参数，Run</strong>Postman 会根据工具的 schema 自动生成表单，运行后显示返回结果。</li>
+</ol>
+
+<h3>接入 Claude Desktop</h3>
+
+<p>Claude Desktop 在 <code>claude_desktop_config.json</code> 里记录要连接哪些 MCP server、怎么启动。FastMCP 可以一键写好配置：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+fastmcp install claude-desktop mySpecialCalculator-mcp-server.py
+# Successfully installed 'My Special Calculator' in Claude Desktop
+</pre>
+</div>
+
+<div class="code" data-lang="json" data-file="claude_desktop_config.json">
+<pre>
+{
+  "mcpServers": {
+    "My Special Calculator": {
+      "command": "uv",
+      "args": ["run", "--with", "fastmcp", "fastmcp", "run",
+               "&lt;path&gt;/mySpecialCalculator-mcp-server.py"],
+      "env": {}
+    }
+  }
+}
+</pre>
+</div>
+
+<div class="box warn">
+  <div class="t">&#9888; 以官方文档为准</div>
+  <p>配置文件的具体位置（macOS 和 Windows 不同）和编辑方式可能随版本变化，请查阅 Claude Desktop 官方文档。</p>
+</div>
+
+<p>重启 Claude Desktop，在对话设置里启用这个工具，然后问：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 230" role="img" aria-label="用户让 Claude 做特殊加法 10 和 10，Claude 决定调用 MCP 工具 add，server 返回 30，Claude 把结果告诉用户">
+  <rect class="bx" x="20" y="30" width="180" height="56" rx="10"/>
+  <text class="lbl" x="110" y="54" text-anchor="middle">“Do a special addition</text><text class="lbl" x="110" y="72" text-anchor="middle">of 10 and 10”</text>
+  <path class="ln" d="M202 58 H250" marker-end="url(#ar)"/>
+  <rect class="bx-a" x="252" y="20" width="200" height="76" rx="12"/>
+  <text class="ttl on-a" x="352" y="46" text-anchor="middle">Claude Desktop</text>
+  <text class="sm" x="352" y="66" text-anchor="middle">“special” → 这该用</text>
+  <text class="sm" x="352" y="84" text-anchor="middle">特殊计算器的 add</text>
+  <path class="ln-a" d="M454 50 H530" marker-end="url(#ar-a)"/>
+  <text class="sm on-a" x="492" y="42" text-anchor="middle">调用 add</text>
+  <text class="mono on-a" x="492" y="72" text-anchor="middle">(10, 10)</text>
+  <rect class="bx-g" x="532" y="20" width="208" height="76" rx="12"/>
+  <text class="ttl on-g" x="636" y="46" text-anchor="middle">My Special Calculator</text>
+  <text class="mono" x="636" y="70" text-anchor="middle">10 + 10 + 10</text>
+  <path class="ln-g" d="M636 98 V130 H420 V100" marker-end="url(#ar-g)"/>
+  <text class="mono on-g" x="528" y="124" text-anchor="middle">返回 30</text>
+  <rect class="bx-g" x="252" y="160" width="200" height="50" rx="10"/>
+  <text class="lbl on-g" x="352" y="190" text-anchor="middle">回答：30 ✓</text>
+  <path class="ln" d="M330 98 V156" marker-end="url(#ar)"/>
+  <text class="sm" x="560" y="190">不是 20 —— 证明真的调用了你的工具</text>
+</svg>
+<figcaption>图 14-6　一次完整的 MCP 工具调用</figcaption>
+</figure>
+
+<h3>换成 HTTP：让别人也能用</h3>
+
+<p>stdio 把 server 限制在本机、只能自己用。想让多个客户端通过网络连接，换成 HTTP 传输，server 就变成了一个可以部署在任何地方的 Web 服务：</p>
+
+<div class="code" data-lang="python">
+<pre>
+mcp.run(transport="http", host="0.0.0.0", port=8000)
+</pre>
+</div>
+
+<div class="box note">
+  <div class="t">&#9432; 注意</div>
+  <p>截至书中撰写时，Claude Desktop 还不支持 HTTP 传输的 MCP server。</p>
+</div>
+
+<h2 id="schema">进阶：复杂的输入输出</h2>
+
+<p>
+  真实世界的工具很少只收两个整数。我们经常要处理结构化的消息，需要<strong>校验 AI 传来的数据</strong>，也要保证<strong>返回值符合可预测的格式</strong>。
+  答案又是 Pydantic。下面是一个连接 MongoDB 的费用管理器：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 230" role="img" aria-label="费用管理器：Pydantic 的 Expense 模型被自动翻译成 MCP schema，AI 按 schema 构造参数调用 add_expense，server 校验后写入 MongoDB">
+  <rect class="bx-p" x="20" y="30" width="190" height="130" rx="12"/>
+  <text class="ttl on-p" x="115" y="54" text-anchor="middle">Pydantic 模型</text>
+  <text class="mono" x="34" y="80">class Expense:</text>
+  <text class="mono" x="44" y="100">description: str</text>
+  <text class="mono" x="44" y="120">amount: float</text>
+  <text class="mono" x="44" y="140">date: datetime?</text>
+  <path class="ln-p" d="M212 95 H262" marker-end="url(#ar-p)"/>
+  <text class="sm" x="237" y="86" text-anchor="middle">自动</text>
+  <rect class="bx" x="264" y="40" width="160" height="110" rx="12"/>
+  <text class="ttl" x="344" y="66" text-anchor="middle">MCP schema</text>
+  <text class="sm" x="344" y="90" text-anchor="middle">参数类型：Expense</text>
+  <text class="sm" x="344" y="110" text-anchor="middle">字段 + 描述</text>
+  <text class="sm" x="344" y="130" text-anchor="middle">（Postman 里可见）</text>
+  <path class="ln" d="M426 95 H470" marker-end="url(#ar)"/>
+  <rect class="bx-a" x="472" y="30" width="140" height="130" rx="12"/>
+  <text class="ttl on-a" x="542" y="56" text-anchor="middle">AI 调用</text>
+  <text class="mono" x="542" y="82" text-anchor="middle">add_expense</text>
+  <text class="sm" x="542" y="104" text-anchor="middle">"午饭", 35.5</text>
+  <text class="sm on-g" x="542" y="132" text-anchor="middle">校验通过 ✓</text>
+  <path class="ln" d="M614 95 H650" marker-end="url(#ar)"/>
+  <rect class="bx-g" x="652" y="55" width="88" height="80" rx="12"/>
+  <text class="ttl on-g" x="696" y="92" text-anchor="middle">MongoDB</text>
+  <text class="sm" x="696" y="112" text-anchor="middle">expenses</text>
+  <text class="sm" x="380" y="200" text-anchor="middle">同一个模型：告诉 AI 该传什么 + 校验 AI 实际传了什么</text>
+</svg>
+<figcaption>图 14-7　用 Pydantic 定义 MCP 工具的输入输出</figcaption>
+</figure>
+
+<div class="code" data-lang="python" data-file="part5/building-an-mcp-server/myExpenseManager-mcp-server.py（节选）">
+<pre>
+from pymongo import AsyncMongoClient
+from pydantic import BaseModel, Field
+from datetime import datetime
+from typing import List, Optional
+from bson import ObjectId
+from fastmcp import FastMCP
+
+mcp = FastMCP(
+    name="My Expense Manager",
+    instructions="This is a simple expense manager that allows you to add, find, get and count expenses",
+)
+
+client = AsyncMongoClient("mongodb://localhost:27017?directConnection=true")
+expenses = client.get_database("test").get_collection("expenses")
+
+
+class Expense(BaseModel):                                     # ❶ 用 Pydantic 描述结构
+    _id: Optional[ObjectId] = None
+    description: str = Field(description="The description of the expense")
+    amount: float = Field(description="The amount of the expense")
+    date: Optional[datetime | str] = Field(
+        description="The date of the expense", default=None)
+
+
+@mcp.tool(name="add_expense", description="Add a new expense")
+async def add_expense(data: Expense) -&gt; ObjectId:             # ❷ 作为工具的输入类型
+    try:
+        result = await expenses.insert_one(data.model_dump(mode="json"))
+        return result.inserted_id
+    except Exception as e:
+        raise Exception("Unable to add the expense due to the following error: ", e)
+
+
+@mcp.tool()
+async def find_expenses() -&gt; List[Expense]:                   # ❸ 用 docstring 描述用途
+    """
+    Find all expenses
+    Args:
+        None
+    Returns:
+        List[Expense]: A list of expenses
+    """
+    list_of_expenses = await expenses.find().to_list(length=100)
+    for expense in list_of_expenses:
+        expense["_id"] = str(expense["_id"])
+    return list_of_expenses
+</pre>
+</div>
+
+<div class="box key">
+  <div class="t">&#128273; Pydantic 贯穿全书</div>
+  <ul>
+    <li><strong>第 3 章</strong>：定义 REST API 的请求体</li>
+    <li><strong>第 6 章</strong>：定义 LLM 结构化输出的 JSON Schema</li>
+    <li><strong>第 14 章</strong>：定义 MCP 工具的输入输出 schema</li>
+  </ul>
+  <p>同一个思路：<strong>用类型描述数据，让机器自动生成说明、自动校验</strong>。</p>
+</div>
+
+<h2 id="summary">小结</h2>
+
+<div class="tw"><table>
+  <tr><th>主题</th><th>要点</th></tr>
+  <tr><td>自定义工具</td><td><code>@tool</code> + 描述性函数名 + 精确类型提示 + 完整 docstring，它们是 LLM 的“说明书”</td></tr>
+  <tr><td>复用问题</td><td>每个 Agent 重写工具很低效；打包成库可以；MCP 更优雅</td></tr>
+  <tr><td>MCP</td><td>通用标准，让任何 Agent 连接任何工具和数据源</td></tr>
+  <tr><td>架构</td><td>Host / Client / Server；Server 提供 Tools / Resources / Prompts</td></tr>
+  <tr><td>传输</td><td>stdio（本地、单用户）vs HTTP（联网、多客户端）</td></tr>
+  <tr><td>FastMCP</td><td><code>FastMCP(name, instructions)</code> + <code>@mcp.tool</code> + <code>mcp.run()</code></td></tr>
+  <tr><td>测试与集成</td><td>Postman 验证工具；<code>fastmcp install claude-desktop</code> 一键接入</td></tr>
+  <tr><td>复杂 schema</td><td>用 Pydantic 模型作为工具的输入输出，自动转成 MCP schema</td></tr>
+</table></div>
+
+<p>
+  继续深入：<a href="https://google.github.io/adk-docs">Google ADK</a> ·
+  <a href="https://gofastmcp.com">FastMCP</a> ·
+  <a href="https://fast-agent.ai">fast-agent</a> ·
+  <a href="https://modelcontextprotocol.io/clients">MCP 客户端列表</a>
+</p>
+
+<div class="exercise">
+  <h3>动手练习</h3>
+  <ol>
+    <li>写一个执行本地任务的工具，比如读取某种专用格式的文件，或查询一个本地数据库。</li>
+    <li>改工具的 docstring：只改一句话，观察 AI 调用工具的准确度变好还是变差。</li>
+    <li>把你的 MCP server 改成 HTTP 传输，从另一个应用或环境连接它。</li>
+  </ol>
+</div>
+
+<h2 id="afterword">结语：轮到你开火了</h2>
+
+<p>
+  服务器的嗡鸣安静下来。一封 Sales Lead 邮件到达，Agent 认出标签后没有只是归档：它推断需要跟进，规划步骤、选择工具、执行流程 ——
+  搜索公司网站、找到联系人、起草个性化邮件、在 CRM 里记录。销售团队收到通知：新的合格线索，调研和草稿都已就绪。
+  <strong>AI 不再只是聪明的应答者或勤快的分拣员，而是真正的数字同事。它把团队的时间和头脑还给了他们。</strong>
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 250" role="img" aria-label="全书旅程四个阶段：第一次 API 调用，用 RAG 给 AI 记忆，用微调教 AI 新技能，用 Agent 给 AI 能动性">
+  <rect class="bx-b" x="20"  y="40" width="165" height="120" rx="12"/>
+  <text class="ttl on-b" x="102" y="68" text-anchor="middle">① 第一次调用</text>
+  <text class="sm" x="102" y="92" text-anchor="middle">直接调 LLM 回答</text><text class="sm" x="102" y="110" text-anchor="middle">支持问题</text>
+  <text class="sm on-b" x="102" y="142" text-anchor="middle">第 1–6 章</text>
+  <rect class="bx-g" x="205" y="40" width="165" height="120" rx="12"/>
+  <text class="ttl on-g" x="287" y="68" text-anchor="middle">② 给 AI 记忆</text>
+  <text class="sm" x="287" y="92" text-anchor="middle">向量数据库 + RAG</text><text class="sm" x="287" y="110" text-anchor="middle">接地于自己的知识</text>
+  <text class="sm on-g" x="287" y="142" text-anchor="middle">第 7–8 章</text>
+  <rect class="bx-p" x="390" y="40" width="165" height="120" rx="12"/>
+  <text class="ttl on-p" x="472" y="68" text-anchor="middle">③ 教 AI 新技能</text>
+  <text class="sm" x="472" y="92" text-anchor="middle">微调分类模型</text><text class="sm" x="472" y="110" text-anchor="middle">驯服收件箱</text>
+  <text class="sm on-p" x="472" y="142" text-anchor="middle">第 9–11 章</text>
+  <rect class="bx-a" x="575" y="40" width="165" height="120" rx="12"/>
+  <text class="ttl on-a" x="657" y="68" text-anchor="middle">④ 给 AI 能动性</text>
+  <text class="sm" x="657" y="92" text-anchor="middle">Agent + 工具 + MCP</text><text class="sm" x="657" y="110" text-anchor="middle">推理、规划、行动</text>
+  <text class="sm on-a" x="657" y="142" text-anchor="middle">第 12–14 章</text>
+  <path class="ln" d="M187 100 H201" marker-end="url(#ar)"/><path class="ln" d="M372 100 H386" marker-end="url(#ar)"/><path class="ln" d="M557 100 H571" marker-end="url(#ar)"/>
+  <text class="ttl" x="380" y="206" text-anchor="middle">先给 AI 记忆，再给 AI 能动性 —— 作为回报，AI 给了团队自由</text>
+  <text class="sm" x="380" y="230" text-anchor="middle">他们没有发明新的基础模型。他们不是 AI 建筑师，而是 AI 厨师</text>
+</svg>
+<figcaption>图 14-8　回顾全书：一个创业团队的四次进化</figcaption>
+</figure>
+
+<p>
+  他们学会了挑选正确的原料（预训练模型、RAG、微调），用恰当的技法（提示工程、工具使用）把它们组合起来。
+  跟着这段旅程走下来，你也做到了。这段旅程不是为了把代码写到完美，而是为了<strong>解放写代码的人</strong>，
+  让他们专注于真正复杂、有创意、有战略价值的事情。
+</p>
+
+<div class="exercise">
+  <h3>留给你的问题</h3>
+  <ol>
+    <li>你版本的“收件箱问题”是什么？</li>
+    <li>哪一个重复、单调的瓶颈，是你现在终于可以解决的？</li>
+    <li>你会怎么向经理解释 RAG 和微调各自的商业价值？</li>
+    <li>你要试的第一道“菜”是什么？</li>
+  </ol>
+  <p style="margin-bottom:0">所以，AI 厨师，你打算做点什么？<strong>现在轮到你开火了。</strong></p>
+</div>
+
+<div id="pager"></div>
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

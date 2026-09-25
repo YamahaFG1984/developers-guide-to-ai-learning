@@ -1,0 +1,817 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 8 章 · 设计 RAG 系统 — AI 开发者指南</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="8">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 8 章 · 检索增强生成</span>
+<h1>设计 RAG 系统</h1>
+<p class="lede">
+  LLM 很强，但面对你自己的数据时它是一张白纸：内部 wiki、客服工单、数据库记录，它一概不知。
+  <strong>RAG（Retrieval-Augmented Generation，检索增强生成）</strong>就是解决这个问题的架构模式：
+  在需要的那一刻，把私有数据里<strong>恰好相关的那几段</strong>交给模型。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>理解 RAG 流水线的两个阶段：<strong>摄取</strong>（离线）和<strong>推理</strong>（在线）</li>
+    <li>掌握<strong>分块（chunking）</strong>策略，尤其是递归分块</li>
+    <li>从零搭一个文档问答机器人：向量库 + prompt 模板 + 对话历史 + 流式</li>
+    <li>给回答加上<strong>引用来源</strong>，提升可信度</li>
+    <li>了解进阶技巧：父子检索、查询重写、重排序、混合检索、LLM 评判者</li>
+    <li>重视 RAG 系统的数据质量与安全</li>
+  </ul>
+</div>
+
+<div class="box note">
+  <div class="t">&#128194; 对应代码：<code>part3/rag_examples/</code></div>
+  <ul>
+    <li><code>character_text_splitting.py</code> / <code>recursive_character_text_splitting.py</code> —— 分块</li>
+    <li><code>common/document_vector_store.py</code> / <code>multi_document_vector_store.py</code> —— 向量库封装</li>
+    <li><code>example_support_search.py</code> —— 最基础的 RAG</li>
+    <li><code>main.py</code> —— FastAPI 服务；<code>multi_query.py</code> —— 多查询扩展；前端在 <code>part3/client/</code></li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="what">什么是 RAG</h2>
+
+<p>在 ChatGPT 里做个对比实验：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 270" role="img" aria-label="普通问题模型直接回答；涉及新知识的问题，系统先搜索获取上下文，再让模型基于上下文回答并附上引用">
+  <text class="ttl" x="20" y="22">① 训练数据里就有答案 → 不需要 RAG</text>
+  <rect class="bx" x="20" y="34" width="210" height="40" rx="8"/><text class="sm" x="125" y="58" text-anchor="middle">Who are the Beatles?</text>
+  <path class="ln" d="M232 54 H290" marker-end="url(#ar)"/>
+  <rect class="bx-p" x="292" y="34" width="100" height="40" rx="8"/><text class="ttl on-p" x="342" y="59" text-anchor="middle">LLM</text>
+  <path class="ln" d="M394 54 H452" marker-end="url(#ar)"/>
+  <rect class="bx-g" x="454" y="34" width="286" height="40" rx="8"/><text class="sm" x="597" y="58" text-anchor="middle">直接给出好答案（维基百科早学过了）</text>
+
+  <text class="ttl" x="20" y="116">② 训练截止之后的新信息 → 需要 RAG</text>
+  <rect class="bx" x="20" y="128" width="210" height="52" rx="8"/><text class="sm" x="125" y="150" text-anchor="middle">2025 年的 George T. Stagg</text><text class="sm" x="125" y="168" text-anchor="middle">值得买吗？</text>
+  <path class="ln" d="M232 154 H270" marker-end="url(#ar)"/>
+  <rect class="bx-d" x="272" y="118" width="468" height="140" rx="12"/>
+  <text class="sm" x="286" y="136">RAG 流水线</text>
+  <rect class="bx-b" x="290" y="146" width="120" height="44" rx="8"/><text class="lbl on-b" x="350" y="173" text-anchor="middle">网页搜索</text>
+  <path class="ln" d="M412 168 H440" marker-end="url(#ar)"/>
+  <rect class="bx-g" x="442" y="146" width="120" height="44" rx="8"/><text class="lbl on-g" x="502" y="166" text-anchor="middle">最新评测</text><text class="sm" x="502" y="182" text-anchor="middle">（上下文）</text>
+  <path class="ln" d="M564 168 H592" marker-end="url(#ar)"/>
+  <rect class="bx-p" x="594" y="146" width="130" height="44" rx="8"/><text class="lbl on-p" x="659" y="164" text-anchor="middle">prompt + 上下文</text><text class="sm" x="659" y="182" text-anchor="middle">→ LLM</text>
+  <path class="ln" d="M659 192 V210" marker-end="url(#ar)"/>
+  <rect class="bx-a" x="450" y="212" width="276" height="36" rx="8"/><text class="sm on-a" x="588" y="235" text-anchor="middle">有依据的回答 + 引用链接</text>
+</svg>
+<figcaption>图 8-1　模型不知道的，先检索（Retrieve），再增强（Augment）prompt，最后生成（Generate）</figcaption>
+</figure>
+
+<div class="box deep">
+  <div class="t">&#128302; RAG 与工具调用</div>
+  <p>
+    模型怎么知道自己需要搜索？ChatGPT 在幕后把你的 prompt 和一组<strong>工具</strong>（名称、输入格式、使用说明）一起交给模型。
+    如果模型判断问题需要外部知识，就会调用“网页搜索”工具，拿到结果后再回答 —— 这个“检索然后生成”的过程就是 RAG。
+    也有系统在调用模型<strong>之前</strong>就先检索。工具调用在第五部分详细讲。
+  </p>
+</div>
+
+<h3>知识库：LLM 的外部记忆</h3>
+
+<p>
+  把 RAG 用到客服场景：知识库存放所有 how-to 文章。<strong>往知识库里加文章，AI 客服就“学会”了新知识</strong>，不用重新训练。
+  而好的 RAG 只检索必要的内容，所以不用担心 prompt 太大或太贵。
+</p>
+
+<div class="box key">
+  <div class="t">&#128273; RAG 的本质是上下文工程</div>
+  <p>RAG 不只是把文档塞进 prompt，而是<strong>塑造上下文</strong>：只让模型看到重要的内容，并以最清晰的形式呈现。好的上下文工程能降低成本、减少幻觉，并可测量地提升回答质量。</p>
+</div>
+
+<p>
+  为什么用向量数据库？因为 “I'm having password issues”、“Something is wrong and I can't log in”、“I can't seem to sign in”
+  说的是同一件事，只有<strong>按含义检索</strong>才能都找到对的文章（第 7 章）。
+</p>
+
+<h2 id="pipeline">RAG 流水线</h2>
+
+<p>一条 RAG 流水线分成两段：<strong>摄取</strong>提前离线做好，<strong>推理</strong>在每次用户提问时实时运行。</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 360" role="img" aria-label="RAG 流水线：摄取阶段把文档分块、嵌入、存入向量库；推理阶段把问题嵌入、检索、增强 prompt、生成回答">
+  <rect class="bx-d" x="10" y="10" width="740" height="120" rx="12"/>
+  <text class="ttl on-b" x="26" y="34">摄取 Ingestion（离线，提前做）</text>
+  <rect class="bx" x="26" y="52" width="110" height="56" rx="8"/><text class="lbl" x="81" y="78" text-anchor="middle">文档</text><text class="sm" x="81" y="96" text-anchor="middle">README 等</text>
+  <path class="ln" d="M138 80 H168" marker-end="url(#ar)"/>
+  <rect class="bx-a" x="170" y="52" width="120" height="56" rx="8"/><text class="lbl on-a" x="230" y="78" text-anchor="middle">分块</text><text class="sm" x="230" y="96" text-anchor="middle">chunking</text>
+  <path class="ln" d="M292 80 H322" marker-end="url(#ar)"/>
+  <rect class="bx-p" x="324" y="52" width="130" height="56" rx="8"/><text class="lbl on-p" x="389" y="78" text-anchor="middle">Embedding 模型</text><text class="sm" x="389" y="96" text-anchor="middle">mxbai-embed-large</text>
+  <path class="ln" d="M456 80 H486" marker-end="url(#ar)"/>
+  <rect class="bx" x="488" y="52" width="110" height="56" rx="8"/><text class="lbl" x="543" y="78" text-anchor="middle">chunk 向量</text><text class="sm" x="543" y="96" text-anchor="middle">+ 索引</text>
+  <path class="ln" d="M600 80 H630" marker-end="url(#ar)"/>
+  <rect class="bx-b" x="632" y="44" width="106" height="72" rx="10"/><text class="ttl on-b" x="685" y="76" text-anchor="middle">向量</text><text class="ttl on-b" x="685" y="96" text-anchor="middle">数据库</text>
+
+  <rect class="bx-d" x="10" y="146" width="740" height="206" rx="12"/>
+  <text class="ttl on-a" x="26" y="170">推理 Inference（在线，每次提问）</text>
+  <rect class="bx" x="26" y="186" width="110" height="50" rx="8"/><text class="lbl" x="81" y="216" text-anchor="middle">用户问题</text>
+  <path class="ln" d="M138 211 H168" marker-end="url(#ar)"/>
+  <rect class="bx-p" x="170" y="186" width="120" height="50" rx="8"/><text class="lbl on-p" x="230" y="216" text-anchor="middle">Embedding 模型</text>
+  <path class="ln" d="M292 211 H322" marker-end="url(#ar)"/>
+  <rect class="bx" x="324" y="186" width="130" height="50" rx="8"/><text class="lbl" x="389" y="216" text-anchor="middle">问题向量</text>
+  <path class="ln-b" d="M456 211 H660 V118" marker-end="url(#ar-b)"/>
+  <text class="ttl on-b" x="560" y="202" text-anchor="middle">① 检索 Retrieval</text>
+  <text class="sm" x="560" y="228" text-anchor="middle">相似度搜索，取 top k</text>
+  <path class="ln-b" d="M710 118 V290 H632" marker-end="url(#ar-b)"/>
+  <text class="sm on-b" x="716" y="200">相关</text><text class="sm on-b" x="716" y="216">chunk</text>
+
+  <rect class="bx-g" x="370" y="262" width="260" height="58" rx="10"/>
+  <text class="ttl on-g" x="500" y="284" text-anchor="middle">② 增强 Augmentation</text>
+  <text class="sm" x="500" y="304" text-anchor="middle">prompt 模板 + chunk + 用户问题</text>
+  <path class="ln" d="M368 291 H300" marker-end="url(#ar)"/>
+  <rect class="bx-a" x="26" y="262" width="272" height="58" rx="10"/>
+  <text class="ttl on-a" x="162" y="284" text-anchor="middle">③ 生成 Generation</text>
+  <text class="sm" x="162" y="304" text-anchor="middle">LLM 生成回答（通常流式返回）</text>
+</svg>
+<figcaption>图 8-2　RAG 流水线全景。各种 RAG 变体，都只是在调整其中一个或几个环节</figcaption>
+</figure>
+
+<div class="tw"><table>
+  <tr><th>阶段</th><th>做什么</th></tr>
+  <tr><td>分块</td><td>收集文档，切成便于搜索的小片段（chunk）</td></tr>
+  <tr><td>嵌入与索引</td><td>每个 chunk 转成向量存进数据库，建立索引以便快速检索</td></tr>
+  <tr><td>① 检索</td><td>把用户问题做相似度搜索，拿回最相关的 top k 个 chunk</td></tr>
+  <tr><td>② 增强</td><td>用 prompt 模板把系统指令、chunk 和问题拼在一起</td></tr>
+  <tr><td>③ 生成</td><td>发给 LLM 生成回答</td></tr>
+</table></div>
+
+<h3>环境准备</h3>
+
+<p>本章换用 Ollama 的 embedding 模型 <strong>mxbai-embed-large</strong>：检索质量高、本地运行高效，官方说它“超越 OpenAI text-embedding-3-large 等商业模型，性能匹敌 20 倍于它体积的模型”。</p>
+
+<div class="code" data-lang="bash">
+<pre>
+ollama pull mxbai-embed-large
+pip install "fastapi[standard]"==0.119.0 chromadb==1.2.1 \
+  jinja2==3.1.6 langchain-text-splitters==1.0.0 requests==2.32.5
+</pre>
+</div>
+
+<p>这里只用了 LangChain 的<strong>文本切分工具</strong>，并没有用整个框架。</p>
+
+<h2 id="chunking">分块（Chunking）</h2>
+
+<p>分块策略的好坏直接决定 RAG 是否可靠。它要同时满足三个目标：</p>
+<ol>
+  <li>embedding 能<strong>准确捕获</strong>这段文字的含义</li>
+  <li>chunk 里有<strong>足够的上下文</strong></li>
+  <li>长度不超过 embedding 模型的 <strong>token 上限</strong></li>
+</ol>
+<p>chunk 越小，包含的主题越少，embedding 的含义就越聚焦，检索也越准；检索结果发给 LLM 的 token 也更少、更相关。</p>
+
+<h3>最朴素的：按字符数硬切</h3>
+
+<div class="code" data-lang="python" data-file="part3/rag_examples/character_text_splitting.py">
+<pre>
+from langchain_text_splitters import CharacterTextSplitter
+
+text = """Our system requires multi-factor Authentication (MFA). This helps
+to keep your account secure. This step-by-step guide will walk you through
+the MFA setup."""
+
+splitter = CharacterTextSplitter(
+    separator="",          # 分隔符：空串表示可以在任意字符处切
+    chunk_size=70,         # 每块 70 个字符
+    chunk_overlap=20       # 相邻块重叠 20 个字符
+)
+
+for idx, chunk in enumerate(splitter.split_text(text)):
+    print(f"{idx + 1}: {chunk}\n- character count: {len(chunk)}")
+</pre>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 220" role="img" aria-label="固定大小分块：每块 70 个字符，相邻块重叠 20 个字符，单词会被从中间切断">
+  <rect class="bx-b" x="20" y="24" width="560" height="34" rx="6"/>
+  <text class="mono" x="30" y="46">Our system requires multi-factor Authentication (MFA). This helps to k</text>
+  <text class="sm on-b" x="590" y="46">块 1 · 70 字符</text>
+
+  <rect class="bx-g" x="100" y="74" width="560" height="34" rx="6"/>
+  <text class="mono" x="110" y="96">FA). This helps to keep your account secure. This step-by-step guide w</text>
+  <text class="sm on-g" x="668" y="96">块 2 · 70</text>
+
+  <rect class="bx-p" x="180" y="124" width="440" height="34" rx="6"/>
+  <text class="mono" x="190" y="146">step-by-step guide will walk you through the MFA setup.</text>
+  <text class="sm on-p" x="628" y="146">块 3 · 55</text>
+
+  <rect class="bx-a" x="386" y="27" width="150" height="28" rx="4" style="fill:none;stroke-dasharray:4 3"/>
+  <rect class="bx-a" x="106" y="77" width="150" height="28" rx="4" style="fill:none;stroke-dasharray:4 3"/>
+  <rect class="bx-a" x="466" y="77" width="150" height="28" rx="4" style="fill:none;stroke-dasharray:4 3"/>
+  <rect class="bx-a" x="186" y="127" width="150" height="28" rx="4" style="fill:none;stroke-dasharray:4 3"/>
+  <text class="sm on-a" x="100" y="184">橙色虚线框 = 相邻块共享的 20 个字符：降低一个想法被切成两半的概率，</text>
+  <text class="sm on-a" x="100" y="202">也让相邻块在语义上有联系（代价是冗余和更多存储）</text>
+  <text class="sm on-r" x="500" y="184">“k” “FA)” “w”：单词被拦腰切断 ✗</text>
+</svg>
+<figcaption>图 8-3　固定大小分块：简单，但会把单词从中间切开，一般不推荐</figcaption>
+</figure>
+
+<h3>五种分块策略</h3>
+
+<div class="tw"><table>
+  <tr><th>策略</th><th>说明</th></tr>
+  <tr><td>固定大小 Fixed size</td><td>按字符数硬切。一般不推荐，但有助于理解</td></tr>
+  <tr><td><strong>递归 Recursive ⭐</strong></td><td><strong>最好的通用起点</strong>。按段落、换行、空格等常见分隔符逐级切，块大小不一，但更可能保留完整的意思</td></tr>
+  <tr><td>基于文档 Document based</td><td>本质是递归，但按文档类型（Markdown、HTML、PDF）使用专门的分隔符</td></tr>
+  <tr><td>语义 Semantic</td><td>用句子 embedding 找出语义相关的内容组成块。更慢、更耗算力</td></tr>
+  <tr><td>Agentic</td><td>让 Agent 来分块。目前偏实验性，慢且难扩展</td></tr>
+</table></div>
+
+<h3>递归分块</h3>
+
+<p><code>RecursiveCharacterTextSplitter</code> 先尝试按段落切，块还太大就换下一级分隔符继续切，直到满足大小要求：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 210" role="img" aria-label="递归分块的分隔符优先级：段落、换行、句号、空格、任意字符">
+  <rect class="bx-g" x="20"  y="40" width="130" height="56" rx="10"/><text class="mono on-g" x="85" y="64" text-anchor="middle">"\n\n"</text><text class="sm" x="85" y="84" text-anchor="middle">段落</text>
+  <rect class="bx-g" x="170" y="40" width="130" height="56" rx="10"/><text class="mono on-g" x="235" y="64" text-anchor="middle">"\n"</text><text class="sm" x="235" y="84" text-anchor="middle">换行</text>
+  <rect class="bx-b" x="320" y="40" width="130" height="56" rx="10"/><text class="mono on-b" x="385" y="64" text-anchor="middle">"."</text><text class="sm" x="385" y="84" text-anchor="middle">句子（示例中加的）</text>
+  <rect class="bx"   x="470" y="40" width="130" height="56" rx="10"/><text class="mono" x="535" y="64" text-anchor="middle">" "</text><text class="sm" x="535" y="84" text-anchor="middle">单词</text>
+  <rect class="bx-r" x="620" y="40" width="120" height="56" rx="10"/><text class="mono on-r" x="680" y="64" text-anchor="middle">""</text><text class="sm" x="680" y="84" text-anchor="middle">任意字符</text>
+  <path class="ln" d="M152 68 H166" marker-end="url(#ar)"/><path class="ln" d="M302 68 H316" marker-end="url(#ar)"/>
+  <path class="ln" d="M452 68 H466" marker-end="url(#ar)"/><path class="ln" d="M602 68 H616" marker-end="url(#ar)"/>
+  <text class="sm" x="380" y="24" text-anchor="middle">块还太大？→ 换下一级分隔符继续切</text>
+  <path class="ln-g" d="M20 120 H740" marker-end="url(#ar-g)"/>
+  <text class="sm on-g" x="20" y="140">越靠左越好：切在自然边界上，意思更完整</text>
+  <text class="sm on-r" x="740" y="140" text-anchor="end">最后的兜底：保证不超长</text>
+  <text class="sm" x="380" y="178" text-anchor="middle">结果：1 “Our system requires multi-factor authentication (MFA).” · 2 “This helps to keep your account secure.”</text>
+  <text class="sm" x="380" y="196" text-anchor="middle">3 “This step-by-step guide will walk you through the MFA setup.” —— 每块都是完整的句子 ✓</text>
+</svg>
+<figcaption>图 8-4　递归分块：优先在自然边界处切分</figcaption>
+</figure>
+
+<div class="code" data-lang="python" data-file="part3/rag_examples/recursive_character_text_splitting.py">
+<pre>
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+splitter = RecursiveCharacterTextSplitter(
+    separators=["\n\n", "\n", ".", " ", ""],   # ❶ 加入了句号
+    chunk_size=70,
+    chunk_overlap=0,                            # ❷ 不重叠
+    keep_separator='end'                        # 句号留在句尾
+)
+
+chunks = splitter.split_text(text)
+</pre>
+</div>
+
+<div class="box tip">
+  <div class="t">&#128295; 可视化玩一玩</div>
+  <p>Hugging Face 上的 <a href="https://huggingface.co/spaces/m-ric/chunk_visualizer">Chunk Visualizer</a> 可以直观对比各种分块策略和参数。</p>
+</div>
+
+<h3>对 Markdown 分块</h3>
+
+<p>本章的“知识库”是仓库里的 README 文件（Markdown）。<code>#</code> 标题是天然的语义分界，用专门的 Markdown 分隔符效果更好：</p>
+
+<div class="code" data-lang="python">
+<pre>
+from pathlib import Path
+from langchain_text_splitters import RecursiveCharacterTextSplitter, Language
+
+document_text = Path('../../README.md').read_text()        # 跨平台读文件
+
+splitter = RecursiveCharacterTextSplitter.from_language(   # 按语言选分隔符
+    language=Language.MARKDOWN,
+    chunk_size=1500
+)
+
+chunks = splitter.split_text(document_text)
+</pre>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 130" role="img" aria-label="mxbai-embed-large 上限 512 token，约 2048 字符，chunk_size 1500 字符留有余量">
+  <rect class="bx-d" x="20" y="40" width="600" height="30" rx="6"/>
+  <rect class="fill-g" x="20" y="40" width="440" height="30" rx="6"/>
+  <text class="sm wt" x="240" y="60" text-anchor="middle">chunk_size = 1,500 字符</text>
+  <path class="ln-r" d="M620 30 V80"/>
+  <text class="sm on-r" x="620" y="22" text-anchor="middle">上限 512 token ≈ 2,048 字符</text>
+  <text class="sm" x="540" y="60" text-anchor="middle">安全余量</text>
+  <text class="sm" x="20" y="100">1 token ≈ 4 字符 → 512 × 4 ≈ 2,048。需要硬性 token 上限，就用 from_tiktoken_encoder 或 from_huggingface_tokenizer。</text>
+  <text class="sm" x="20" y="120">注意：塞满上限不一定好 —— 一块包含太多概念会让检索变差，结果不理想时试试更小的块。</text>
+</svg>
+<figcaption>图 8-5　估算 chunk 大小</figcaption>
+</figure>
+
+<h2 id="naive">搭一个最基础的 RAG</h2>
+
+<h3>加载向量数据库</h3>
+
+<div class="code" data-lang="python" data-file="part3/rag_examples/common/document_vector_store.py">
+<pre>
+import chromadb
+from chromadb import Collection
+from chromadb.utils.embedding_functions.ollama_embedding_function import (
+    OllamaEmbeddingFunction
+)
+
+class DocumentVectorStore:
+    def __init__(self, document_text: str):
+        ollama_embedding_function = OllamaEmbeddingFunction(
+            url="http://localhost:11434",
+            model_name="mxbai-embed-large"          # 用 Ollama 生成 embedding
+        )
+
+        client = chromadb.Client()
+        self.collection: Collection = client.create_collection(
+            name="examples_readme",
+            embedding_function=ollama_embedding_function,
+        )
+
+        splitter = RecursiveCharacterTextSplitter.from_language(
+            language="markdown", chunk_size=1500)
+        chunks = splitter.split_text(document_text)
+
+        self.collection.add(                        # 每个 chunk 都会触发一次 embedding
+            documents=chunks,
+            ids=[f"doc{chunk_idx + 1}" for chunk_idx, chunk in enumerate(chunks)]
+        )
+
+    def query(self, question: str, n_results=3) -&gt; List[str]:
+        results = self.collection.query(query_texts=[question], n_results=n_results)
+        return results.get('documents')[0]
+</pre>
+</div>
+
+<p>测试检索：问 “Why is Ollama preferred to hosted APIs for the examples?”，返回的第一个 chunk 正是 README 里讲原因的 <code># Pretrained AI Models</code> 一节。</p>
+
+<h3>Prompt 模板</h3>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 250" role="img" aria-label="RAG 的 prompt 结构：system 消息包含角色、接地和不确定性处理；user 消息包含检索到的文档和问题">
+  <rect class="bx-a" x="20" y="20" width="350" height="210" rx="12"/>
+  <text class="ttl on-a" x="36" y="44">system 消息</text>
+  <rect class="bx" x="36" y="56" width="318" height="48" rx="7"/><text class="lbl" x="48" y="76">角色 Persona</text><text class="sm" x="48" y="94">helpful assistant for the Developer's Guide to AI</text>
+  <rect class="bx" x="36" y="112" width="318" height="48" rx="7"/><text class="lbl" x="48" y="132">接地 Grounding</text><text class="sm" x="48" y="150">Only use the provided &lt;context&gt; to answer</text>
+  <rect class="bx" x="36" y="168" width="318" height="48" rx="7"/><text class="lbl" x="48" y="188">不确定性处理</text><text class="sm" x="48" y="206">不知道就回答 “Sorry, I am unable to help…”</text>
+
+  <rect class="bx-b" x="390" y="20" width="350" height="210" rx="12"/>
+  <text class="ttl on-b" x="406" y="44">user 消息</text>
+  <text class="mono" x="406" y="72">&lt;context&gt;</text>
+  <rect class="bx-g" x="420" y="80" width="300" height="28" rx="5"/><text class="mono" x="430" y="99">&lt;document&gt; chunk 1 &lt;/document&gt;</text>
+  <rect class="bx-g" x="420" y="112" width="300" height="28" rx="5"/><text class="mono" x="430" y="131">&lt;document&gt; chunk 2 &lt;/document&gt;</text>
+  <rect class="bx-g" x="420" y="144" width="300" height="28" rx="5"/><text class="mono" x="430" y="163">&lt;document&gt; chunk 3 &lt;/document&gt;</text>
+  <text class="mono" x="406" y="192">&lt;/context&gt;</text>
+  <text class="mono" x="406" y="216">Question: {{question}}</text>
+</svg>
+<figcaption>图 8-6　RAG prompt = 固定的 system 规则 + 动态的检索结果和问题</figcaption>
+</figure>
+
+<div class="vs">
+  <div class="old"><div class="h">basic_support_system_message.txt</div>
+<div class="code" data-lang="text"><pre>
+You are a helpful assistant and will answer
+questions about the Developer's Guide to AI.
+Only use the provided &lt;context&gt; to answer.
+If you don't know the answer, only respond
+with "Sorry, I am unable to help with that,
+but I can answer questions about the
+documentation."
+</pre></div></div>
+  <div class="new"><div class="h">basic_support_user_message.txt</div>
+<div class="code" data-lang="jinja"><pre>
+&lt;context&gt;
+{% for document in documents %}
+&lt;document&gt;
+{{ document }}
+&lt;/document&gt;
+{% endfor %}
+&lt;/context&gt;
+
+Question: {{question}}
+</pre></div></div>
+</div>
+
+<div class="code" data-lang="python" data-file="part3/rag_examples/example_support_search.py（节选）">
+<pre>
+env = Environment(loader=FileSystemLoader(searchpath="templates"))
+system_message = env.get_template("basic_support_system_message.txt")
+user_message = env.get_template("basic_support_user_message.txt")
+
+documents = readme_vector_store.query(question)          # ① 检索
+
+messages = [
+    {"role": "system", "content": system_message.render()},
+    {"role": "user",   "content": user_message.render(documents=documents, question=question)},  # ② 增强
+]
+
+response = chat(model="llama3.2", messages=messages, stream=True,   # ③ 生成
+                options={"temperature": 0})               # 降低编造的可能
+
+for chunk in response:
+    if chunk.message.content:
+        print(chunk.message.content, end="", flush=True)
+</pre>
+</div>
+
+<div class="prompt">
+  <div class="h">模型回答</div>
+  <div class="b out">According to the provided context, Ollama models are preferred because they only cost you the power required to power your laptop...</div>
+</div>
+
+<div class="box tip">
+  <div class="t">&#128161; 思考题</div>
+  <p>回答里出现了 “the provided context” 这种技术味很重的说法。怎么改 prompt，让它说 “README” 或 “documentation”？试试指令和 few-shot。还能加哪些第 6 章学过的护栏？</p>
+</div>
+
+<h2 id="service">变成带对话历史的服务</h2>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 240" role="img" aria-label="服务处理一次请求：组装 system 消息和历史、修剪历史、检索文档、把增强后的问题加入对话、流式调用 LLM">
+  <rect class="bx" x="20" y="90" width="110" height="60" rx="10"/><text class="lbl" x="75" y="116" text-anchor="middle">POST /</text><text class="sm" x="75" y="134" text-anchor="middle">history + question</text>
+  <path class="ln" d="M132 120 H160" marker-end="url(#ar)"/>
+  <rect class="bx-a" x="162" y="20" width="150" height="56" rx="8"/><text class="lbl on-a" x="237" y="44" text-anchor="middle">① system 消息</text><text class="sm" x="237" y="62" text-anchor="middle">+ 客户端历史</text>
+  <rect class="bx-b" x="162" y="92" width="150" height="56" rx="8"/><text class="lbl on-b" x="237" y="116" text-anchor="middle">② trim_history()</text><text class="sm" x="237" y="134" text-anchor="middle">控制 token</text>
+  <rect class="bx-g" x="162" y="164" width="150" height="56" rx="8"/><text class="lbl on-g" x="237" y="188" text-anchor="middle">③ 向量库检索</text><text class="sm" x="237" y="206" text-anchor="middle">query(question)</text>
+  <path class="ln" d="M237 78 V88" /><path class="ln" d="M237 150 V160"/>
+  <path class="ln" d="M314 192 H360" marker-end="url(#ar)"/>
+  <rect class="bx-p" x="362" y="150" width="190" height="84" rx="10"/>
+  <text class="lbl on-p" x="457" y="176" text-anchor="middle">④ 增强后的 user 消息</text>
+  <text class="sm" x="457" y="196" text-anchor="middle">&lt;context&gt; 文档 &lt;/context&gt;</text>
+  <text class="sm" x="457" y="214" text-anchor="middle">Question: …</text>
+  <path class="ln" d="M554 192 H592 V132" marker-end="url(#ar)"/>
+  <rect class="bx-a" x="560" y="70" width="180" height="60" rx="10"/>
+  <text class="ttl on-a" x="650" y="96" text-anchor="middle">⑤ LLM（流式）</text>
+  <text class="sm" x="650" y="116" text-anchor="middle">StreamingResponse</text>
+</svg>
+<figcaption>图 8-7　第 6 章的对话历史 + 本章的检索 = 一个文档问答机器人</figcaption>
+</figure>
+
+<div class="code" data-lang="python" data-file="part3/rag_examples/main.py（节选）">
+<pre>
+@app.post("/")
+def handle_post(chat_request: ChatRequest):
+    question = chat_request.question
+
+    conversation_history = ConversationHistory({          # 复用第 6 章的组件
+        "role": "system",
+        "content": system_message.render()
+    })
+    for msg in chat_request.history:
+        conversation_history.add_message({'role': msg.role, 'content': msg.content})
+
+    conversation_history.trim_history()                   # 控制历史长度
+
+    documents = readme_vector_store.query(question)       # 检索
+
+    conversation_history.add_message({                    # 检索结果渲染进 user 消息
+        "role": "user",
+        "content": user_message.render(documents=documents, question=question)
+    })
+
+    return StreamingResponse(
+        generate_stream(conversation_history), media_type="text/plain")
+</pre>
+</div>
+
+<p>问一个和文档无关的问题 “Can you tell me about the Beatles?”，机器人会回答 “Sorry, I am unable to help with that, but I can answer questions about the documentation…” —— <strong>护栏生效了</strong>。</p>
+
+<h2 id="citations">引用来源：让用户能核实</h2>
+
+<p>
+  用户不该因为回答听起来很自信就相信它，他们需要<strong>证据</strong>。引用来源（citation）回答了“这个信息从哪来的？”，
+  而且当模型必须给出依据时，它更倾向于引用真实文本而不是猜测，<strong>幻觉也会减少</strong>。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 230" role="img" aria-label="引用的数据流：下载文档时记录 source_url，存为 chunk 元数据，检索时一起取出，放进 prompt，模型在回答末尾输出来源链接">
+  <rect class="bx" x="20" y="30" width="140" height="70" rx="10"/>
+  <text class="lbl" x="90" y="56" text-anchor="middle">GitHub README</text>
+  <text class="sm" x="90" y="76" text-anchor="middle">多个文件</text>
+  <path class="ln" d="M162 65 H194" marker-end="url(#ar)"/>
+  <rect class="bx-b" x="196" y="20" width="170" height="90" rx="10"/>
+  <text class="ttl on-b" x="281" y="44" text-anchor="middle">Document</text>
+  <text class="mono" x="281" y="68" text-anchor="middle">source_url</text>
+  <text class="mono" x="281" y="88" text-anchor="middle">content</text>
+  <path class="ln" d="M368 65 H400" marker-end="url(#ar)"/>
+  <rect class="bx-p" x="402" y="20" width="160" height="90" rx="10"/>
+  <text class="ttl on-p" x="482" y="44" text-anchor="middle">向量库</text>
+  <text class="sm" x="482" y="66" text-anchor="middle">chunk 文本 +</text>
+  <text class="mono on-a" x="482" y="88" text-anchor="middle">metadata.source_url</text>
+  <path class="ln" d="M564 65 H596" marker-end="url(#ar)"/>
+  <rect class="bx-g" x="598" y="20" width="142" height="90" rx="10"/>
+  <text class="ttl on-g" x="669" y="44" text-anchor="middle">prompt</text>
+  <text class="sm" x="669" y="66" text-anchor="middle">&lt;document&gt; 内容</text>
+  <text class="sm" x="669" y="84" text-anchor="middle">&lt;source_url&gt;</text>
+  <path class="ln" d="M669 112 V140" marker-end="url(#ar)"/>
+  <rect class="bx-a" x="300" y="142" width="440" height="70" rx="10"/>
+  <text class="lbl" x="316" y="166">…run the following command: fastapi dev main.py</text>
+  <text class="mono on-a" x="316" y="194">Source URL: https://github.com/…/part1/…/README.md</text>
+  <text class="sm" x="20" y="160">system 规则：</text>
+  <text class="sm" x="20" y="178">Always complete your response</text>
+  <text class="sm" x="20" y="196">with the &lt;source_url&gt;…</text>
+</svg>
+<figcaption>图 8-8　来源信息从摄取一路带到回答里</figcaption>
+</figure>
+
+<p>摄取时可以记录的来源信息包括：标题、作者或站点、原文链接、抓取日期，甚至精确位置（页、节、行）。</p>
+
+<div class="code" data-lang="python">
+<pre>
+class Document(BaseModel):
+    source_url: str
+    content: str
+
+def download_remote_document(owner="jorshali", repo="developers-guide-to-ai",
+                             branch="main", filename="README.md") -&gt; Document:
+    source_url = f"https://github.com/{owner}/{repo}/blob/{branch}/{filename}"      # 给人看的链接
+    raw_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{filename}"  # 取纯文本
+    response = requests.get(raw_url)
+    response.raise_for_status()           # 4xx / 5xx 抛异常
+    return Document(source_url=source_url, content=response.text)
+</pre>
+</div>
+
+<div class="code" data-lang="python" data-file="part3/rag_examples/common/multi_document_vector_store.py（节选）">
+<pre>
+for doc_idx, document in enumerate(documents):
+    document_chunks = splitter.split_text(document.content)
+    for chunk_idx, document_chunk in enumerate(document_chunks):
+        self.collection.add(
+            documents=document_chunk,
+            ids=f"doc_{doc_idx + 1}_{chunk_idx + 1}",               # 文档号 + 块号
+            metadatas={"source_url": document.source_url}           # 来源存为元数据
+        )
+</pre>
+</div>
+
+<p>system 消息加上引用规则，user 模板里给每个文档加上 <code>&lt;source_url&gt;</code>：</p>
+
+<div class="vs">
+  <div class="old"><div class="h">system 消息（节选）</div>
+<div class="code" data-lang="text"><pre>
+- Only use the provided &lt;context&gt; and any chat
+  history to answer questions
+- If the question appears related to chat
+  history, prioritize the chat history
+- Each &lt;document&gt; in the context contains
+  a &lt;source_url&gt;
+- Always complete your response with the
+  &lt;source_url&gt; from the document used
+- Cite your source in the format
+  "Source URL: &lt;source_url&gt;"
+</pre></div></div>
+  <div class="new"><div class="h">user 模板</div>
+<div class="code" data-lang="jinja"><pre>
+&lt;context&gt;
+{% for document in documents %}
+&lt;document&gt;
+{{ document.content }}
+
+&lt;source_url&gt;{{ document.source_url }}&lt;/source_url&gt;
+&lt;/document&gt;
+{% endfor %}
+&lt;/context&gt;
+
+Question: {{question}}
+</pre></div></div>
+</div>
+
+<div class="box tip">
+  <div class="t">&#128161; 想输出真正可点的链接？</div>
+  <p>可以让模型输出来源 ID，在流式传输时替换成链接；或者用 Instructor 的流式结构化输出，定义一个包含“回答 + 来源 ID 列表”的 Pydantic 模型。</p>
+</div>
+
+<h2 id="advanced">进阶 RAG</h2>
+
+<p>到目前为止我们做的叫 <strong>naive RAG</strong>：简单、能用、很适合起步。需求增长后，你会碰到它的天花板。</p>
+
+<h3>更聪明的索引：父子检索与多向量</h3>
+
+<p>
+  分块是个两难：<strong>小块</strong>对精确问题很准，但应付不了宽泛问题；<strong>大块</strong>上下文足，但对具体问题细节不够。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 250" role="img" aria-label="父子检索：用小块做匹配，匹配后通过 parentID 取回完整的父文章交给 LLM">
+  <text class="ttl" x="150" y="22" text-anchor="middle">向量库：小块（子）</text>
+  <rect class="bx-b" x="40" y="36" width="220" height="30" rx="6"/><text class="sm" x="52" y="56">chunk · parentID: 1</text>
+  <rect class="bx-a" x="40" y="72" width="220" height="30" rx="6"/><text class="sm on-a" x="52" y="92">chunk · parentID: 1  ← 命中！</text>
+  <rect class="bx-b" x="40" y="108" width="220" height="30" rx="6"/><text class="sm" x="52" y="128">chunk · parentID: 1</text>
+  <rect class="bx-g" x="40" y="152" width="220" height="30" rx="6"/><text class="sm" x="52" y="172">chunk · parentID: 2</text>
+  <rect class="bx-g" x="40" y="188" width="220" height="30" rx="6"/><text class="sm" x="52" y="208">chunk · parentID: 2</text>
+
+  <text class="ttl" x="490" y="22" text-anchor="middle">文档存储：完整文章（父）</text>
+  <rect class="bx-a" x="400" y="40" width="180" height="96" rx="10"/><text class="ttl on-a" x="490" y="80" text-anchor="middle">ID 1</text><text class="sm" x="490" y="100" text-anchor="middle">完整文章</text>
+  <rect class="bx-g" x="400" y="152" width="180" height="66" rx="10"/><text class="ttl on-g" x="490" y="182" text-anchor="middle">ID 2</text><text class="sm" x="490" y="200" text-anchor="middle">完整文章</text>
+  <path class="ln-a" d="M262 87 H396" marker-end="url(#ar-a)"/>
+  <text class="sm on-a" x="330" y="80" text-anchor="middle">按 parentID 取父</text>
+  <path class="ln-a" d="M582 88 H620" marker-end="url(#ar-a)"/>
+  <rect class="bx-p" x="622" y="60" width="118" height="56" rx="10"/><text class="ttl on-p" x="681" y="84" text-anchor="middle">LLM</text><text class="sm" x="681" y="102" text-anchor="middle">拿到完整上下文</text>
+  <text class="sm" x="380" y="242" text-anchor="middle">索引轻、匹配准（小块），交给模型的却是连贯的大段落（父文档）</text>
+</svg>
+<figcaption>图 8-9　父子检索：用小块匹配，用大块回答</figcaption>
+</figure>
+
+<p>
+  <strong>多向量检索</strong>则是为同一份文档生成多个 embedding（标题、摘要、小节标题、句子级块），都打上同一个文档 ID。
+  宽泛问题能命中高层 embedding，细节问题能命中句子级 embedding，最后聚合成原文档返回。
+</p>
+
+<h3>RAG 的几种架构变体</h3>
+
+<div class="tw"><table>
+  <tr><th>变体</th><th>怎么工作</th><th>什么时候用</th></tr>
+  <tr><td><strong>Naive RAG</strong></td><td>经典向量检索，本章做的就是它</td><td>中小型知识库、原型</td></tr>
+  <tr><td><strong>混合检索</strong></td><td>关键词搜索 + 语义/向量搜索组合</td><td>知识库大且杂、提问风格多样</td></tr>
+  <tr><td><strong>CAG 缓存增强</strong></td><td>从内存缓存读而不是搜索索引；预加载到模型 KV 缓存，或直接用键值存储回答重复问题</td><td>高流量、问题重复（FAQ 机器人）、要求超低延迟</td></tr>
+  <tr><td><strong>API 增强</strong></td><td>LLM 发起工具调用（API）而不是搜索（本质是工具调用，第五部分）</td><td>实时数据：天气、股价、库存</td></tr>
+  <tr><td><strong>知识图谱 RAG</strong></td><td>事实存为相连的节点，沿关系精确取数</td><td>高事实准确性、可追溯推理（合规、生物医学）</td></tr>
+</table></div>
+
+<h3>症状 → 对症下药</h3>
+
+<div class="tw"><table>
+  <tr><th>症状</th><th>可能原因</th><th>可以研究的解法</th></tr>
+  <tr><td>就是检索不到对的内容</td><td>用户提问模糊或简写；索引不好；向量搜索对专业术语不敏感</td><td>查询重写、分块策略、混合检索</td></tr>
+  <tr><td>相关内容在 prompt 里却被忽略</td><td>中间迷失</td><td>重排序 / 重新排列</td></tr>
+  <tr><td>有幻觉、质量不稳定</td><td>混入无关上下文；防幻觉指令不够</td><td>重排序、护栏、LLM 评判者、微调</td></tr>
+  <tr><td>不遵守格式或安全规则</td><td>约束不够；缺少生成后校验；训练数据里没有这种格式</td><td>护栏、LLM 评判者、微调</td></tr>
+  <tr><td>成本失控、变慢</td><td>数据越来越多，无关和冗余块撑大了 prompt</td><td>重排序 / 压缩</td></tr>
+</table></div>
+
+<h3>1. 查询重写 / 扩展</h3>
+
+<p>用户可能只打 “reset pw”。在检索之前，先让 LLM 把问题改写得更清楚，或者生成多个版本一起搜：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 210" role="img" aria-label="多查询检索：LLM 把一个模糊问题改写成多个版本，分别检索后合并去重">
+  <rect class="bx" x="20" y="80" width="110" height="46" rx="8"/><text class="mono" x="75" y="108" text-anchor="middle">reset pw</text>
+  <path class="ln" d="M132 103 H168" marker-end="url(#ar)"/>
+  <rect class="bx-p" x="170" y="76" width="90" height="54" rx="10"/><text class="ttl on-p" x="215" y="100" text-anchor="middle">LLM</text><text class="sm" x="215" y="118" text-anchor="middle">改写</text>
+  <path class="ln" d="M262 90 L300 42" marker-end="url(#ar)"/><path class="ln" d="M262 103 H300" marker-end="url(#ar)"/><path class="ln" d="M262 116 L300 164" marker-end="url(#ar)"/>
+  <rect class="bx-b" x="302" y="22" width="220" height="36" rx="7"/><text class="sm" x="314" y="45">How do I reset my password?</text>
+  <rect class="bx-b" x="302" y="85" width="220" height="36" rx="7"/><text class="sm" x="314" y="108">I forgot my login password</text>
+  <rect class="bx-b" x="302" y="148" width="220" height="36" rx="7"/><text class="sm" x="314" y="171">Steps to change account password</text>
+  <path class="ln" d="M524 40 L586 90" marker-end="url(#ar)"/><path class="ln" d="M524 103 H584" marker-end="url(#ar)"/><path class="ln" d="M524 166 L586 116" marker-end="url(#ar)"/>
+  <rect class="bx-g" x="588" y="72" width="152" height="62" rx="10"/><text class="ttl on-g" x="664" y="98" text-anchor="middle">分别检索</text><text class="sm" x="664" y="118" text-anchor="middle">合并 + 去重</text>
+</svg>
+<figcaption>图 8-10　多查询检索（见 <code>multi_query.py</code>）：覆盖面更广</figcaption>
+</figure>
+
+<div class="tw"><table>
+  <tr><th>策略</th><th>说明</th></tr>
+  <tr><td>Rewrite-retrieve-read</td><td>先把问题改写干净再检索</td></tr>
+  <tr><td>Multi-query</td><td>生成多个不同说法，全部拿去搜</td></tr>
+  <tr><td>HyDE</td><td>让 LLM 先编一个“假想答案”，用它去搜相似文档</td></tr>
+</table></div>
+<p>代价：多一次 LLM 调用，更多 token，更慢。</p>
+
+<h3>2. 重排序 / 重新排列</h3>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 210" role="img" aria-label="重排序：用更聪明的模型给初步检索结果重新打分，把最相关的放到 prompt 开头，丢弃低价值的块">
+  <text class="ttl" x="120" y="22" text-anchor="middle">初步检索结果</text>
+  <rect class="bx" x="40" y="34" width="160" height="28" rx="5"/><text class="sm" x="52" y="53">chunk C · 0.71</text>
+  <rect class="bx" x="40" y="68" width="160" height="28" rx="5"/><text class="sm" x="52" y="87">chunk A · 0.70</text>
+  <rect class="bx-a" x="40" y="102" width="160" height="28" rx="5"/><text class="sm on-a" x="52" y="121">chunk B · 0.69 ★</text>
+  <rect class="bx" x="40" y="136" width="160" height="28" rx="5"/><text class="sm" x="52" y="155">chunk D · 0.66</text>
+  <rect class="bx" x="40" y="170" width="160" height="28" rx="5"/><text class="sm" x="52" y="189">chunk E · 0.60</text>
+
+  <path class="ln" d="M204 116 H290" marker-end="url(#ar)"/>
+  <rect class="bx-p" x="292" y="80" width="170" height="72" rx="10"/>
+  <text class="ttl on-p" x="377" y="106" text-anchor="middle">重排序模型</text>
+  <text class="sm" x="377" y="126" text-anchor="middle">更聪明地重新打分</text>
+  <text class="sm" x="377" y="142" text-anchor="middle">（re-rank）</text>
+  <path class="ln" d="M464 116 H530" marker-end="url(#ar)"/>
+
+  <text class="ttl" x="640" y="22" text-anchor="middle">放进 prompt 的顺序</text>
+  <rect class="bx-a" x="560" y="34" width="160" height="28" rx="5"/><text class="sm on-a" x="572" y="53">① chunk B（开头）</text>
+  <rect class="bx" x="560" y="68" width="160" height="28" rx="5"/><text class="sm" x="572" y="87">② chunk A</text>
+  <rect class="bx" x="560" y="102" width="160" height="28" rx="5"/><text class="sm" x="572" y="121">③ chunk C</text>
+  <rect class="bx-d" x="560" y="136" width="160" height="28" rx="5"/><text class="sm" x="572" y="155">D、E 丢弃或压缩</text>
+  <text class="sm" x="380" y="196" text-anchor="middle">对付“中间迷失”：最重要的放最前面，没价值的干脆不放</text>
+</svg>
+<figcaption>图 8-11　Reorder（调整顺序）· Re-rank（重新打分）· Compress（丢弃或压缩）</figcaption>
+</figure>
+
+<h3>3. 混合检索</h3>
+
+<p>
+  只靠 embedding 可能错过<strong>精确的关键词</strong>：日志里的 <code>HTTP 500</code>、代码片段、零件编号、医疗代码……
+  混合检索同时跑关键词搜索（如 BM25）和向量搜索，再合并结果，通常还要配合重排序：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 170" role="img" aria-label="混合检索：同一个问题同时走关键词搜索和向量搜索，合并后重排序">
+  <rect class="bx" x="20" y="62" width="150" height="46" rx="8"/><text class="sm" x="95" y="82" text-anchor="middle">“HTTP 500 登录后</text><text class="sm" x="95" y="98" text-anchor="middle">报错怎么办”</text>
+  <path class="ln" d="M172 76 L240 42" marker-end="url(#ar)"/><path class="ln" d="M172 94 L240 128" marker-end="url(#ar)"/>
+  <rect class="bx-b" x="242" y="18" width="200" height="46" rx="8"/><text class="lbl on-b" x="342" y="38" text-anchor="middle">关键词搜索 BM25</text><text class="sm" x="342" y="54" text-anchor="middle">精确命中 “HTTP 500”</text>
+  <rect class="bx-p" x="242" y="106" width="200" height="46" rx="8"/><text class="lbl on-p" x="342" y="126" text-anchor="middle">向量搜索</text><text class="sm" x="342" y="142" text-anchor="middle">理解“服务器内部错误”</text>
+  <path class="ln" d="M444 41 L510 76" marker-end="url(#ar)"/><path class="ln" d="M444 129 L510 94" marker-end="url(#ar)"/>
+  <rect class="bx-g" x="512" y="58" width="100" height="54" rx="10"/><text class="ttl on-g" x="562" y="90" text-anchor="middle">合并</text>
+  <path class="ln" d="M614 85 H640" marker-end="url(#ar)"/>
+  <rect class="bx-a" x="642" y="58" width="98" height="54" rx="10"/><text class="ttl on-a" x="691" y="90" text-anchor="middle">重排序</text>
+</svg>
+<figcaption>图 8-12　混合检索：取关键词和语义两者之长</figcaption>
+</figure>
+
+<h3>4. LLM 评判者（LLM-as-a-judge）</h3>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 200" role="img" aria-label="LLM 评判者：把问题、检索段落和候选回答交给另一个 LLM 打分，通过则返回，不通过则拦截或重新检索">
+  <rect class="bx" x="20" y="20" width="150" height="34" rx="6"/><text class="sm" x="95" y="42" text-anchor="middle">① 原始问题</text>
+  <rect class="bx" x="20" y="62" width="150" height="34" rx="6"/><text class="sm" x="95" y="84" text-anchor="middle">② 检索到的段落</text>
+  <rect class="bx" x="20" y="104" width="150" height="34" rx="6"/><text class="sm" x="95" y="126" text-anchor="middle">③ 候选回答</text>
+  <path class="ln" d="M172 37 L240 70"/><path class="ln" d="M172 79 H238" marker-end="url(#ar)"/><path class="ln" d="M172 121 L240 88"/>
+  <rect class="bx-p" x="240" y="30" width="190" height="98" rx="12"/>
+  <text class="ttl on-p" x="335" y="56" text-anchor="middle">评判 LLM</text>
+  <text class="sm" x="335" y="78" text-anchor="middle">忠实于来源？切题？覆盖全？</text>
+  <text class="sm" x="335" y="96" text-anchor="middle">格式、安全规则？</text>
+  <text class="mono" x="335" y="116" text-anchor="middle">→ JSON 判决</text>
+  <path class="ln-g" d="M432 60 H520" marker-end="url(#ar-g)"/><text class="sm on-g" x="476" y="52" text-anchor="middle">pass</text>
+  <rect class="bx-g" x="522" y="38" width="218" height="40" rx="8"/><text class="lbl on-g" x="631" y="63" text-anchor="middle">返回给用户</text>
+  <path class="ln-r" d="M432 100 H520" marker-end="url(#ar-r)"/><text class="sm on-r" x="476" y="92" text-anchor="middle">fail</text>
+  <rect class="bx-r" x="522" y="82" width="218" height="54" rx="8"/><text class="lbl on-r" x="631" y="104" text-anchor="middle">拦截 / 重写查询 / 再检索</text><text class="sm" x="631" y="124" text-anchor="middle">标签：幻觉、缺引用、泄露…</text>
+  <text class="sm" x="380" y="180" text-anchor="middle">把它当作流水线里的质量闸门，也可以用来给多个候选回答排序</text>
+</svg>
+<figcaption>图 8-13　LLM 评判者：生成之后的最后一道关卡</figcaption>
+</figure>
+
+<h3>5. Agentic RAG</h3>
+<p>复杂问题可能需要“思考 → 检索 → 再思考”的循环，或者调用更多工具。ChatGPT 的新模型就是这么做的：用思维链分解问题、检索信息、评估相关性、循环直到能写出答案。第五部分详述。</p>
+
+<h2 id="quality">数据质量与安全</h2>
+
+<div class="box key">
+  <div class="t">&#128273; 如果只记住一句话</div>
+  <p><strong>更好的数据胜过更大的 prompt（better data beats bigger prompts）。</strong>上面每个技巧都建立在干净、最新、可信的数据之上。</p>
+</div>
+
+<div class="cards">
+  <div class="card"><span class="ic">&#129529;</span><h4>从权威数据开始</h4><p>统一格式、去掉样板文字；在文档和块两个层级都<strong>激进去重</strong>；记录版本、日期、权限、URL 等元数据。</p></div>
+  <div class="card"><span class="ic">&#128197;</span><h4>保持新鲜</h4><p>定义什么算“当前”，归档过期副本，<strong>定期重建索引</strong>。</p></div>
+  <div class="card"><span class="ic">&#128200;</span><h4>可观测</h4><p>记录查询、检索到的块和引用；跟踪命中率、延迟和答案质量。答案错了，靠日志调试流水线。</p></div>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 190" role="img" aria-label="RAG 会把数据复制到索引、缓存、chunk 存储等多个地方，每一处都需要同样严格的安全控制">
+  <rect class="bx-a" x="20" y="60" width="150" height="60" rx="10"/><text class="ttl on-a" x="95" y="86" text-anchor="middle">原始数据</text><text class="sm" x="95" y="104" text-anchor="middle">真相来源</text>
+  <path class="ln" d="M172 78 L260 40" marker-end="url(#ar)"/><path class="ln" d="M172 90 H258" marker-end="url(#ar)"/><path class="ln" d="M172 102 L260 140" marker-end="url(#ar)"/>
+  <rect class="bx-r" x="262" y="20" width="150" height="40" rx="8"/><text class="sm on-r" x="337" y="45" text-anchor="middle">向量索引</text>
+  <rect class="bx-r" x="262" y="70" width="150" height="40" rx="8"/><text class="sm on-r" x="337" y="95" text-anchor="middle">chunk 存储</text>
+  <rect class="bx-r" x="262" y="120" width="150" height="40" rx="8"/><text class="sm on-r" x="337" y="145" text-anchor="middle">缓存 / 日志</text>
+  <text class="ttl" x="440" y="40">每一处都要：</text>
+  <text class="sm" x="440" y="64">· 传输与静态加密</text>
+  <text class="sm" x="440" y="84">· 最小权限、按租户隔离</text>
+  <text class="sm" x="440" y="104">· 变更可审计</text>
+  <text class="sm on-r" x="440" y="132">⚠ 别以为向量“只是数字”——</text>
+  <text class="sm on-r" x="440" y="150">它们可以被用来还原原文</text>
+</svg>
+<figcaption>图 8-14　RAG 复制了你的数据，每一份副本都是潜在的泄露点</figcaption>
+</figure>
+
+<ul>
+  <li>没有合适的数据安全协议，<strong>不要把密钥或 PII 推送到第三方服务</strong>。</li>
+  <li>处理敏感内容时，优先用本地或私有端点（比如本章的 Ollama + Chroma），并通过应用层控制访问。</li>
+  <li>记录谁搜了什么、返回了哪些块、引用了哪些来源，保证可追溯。</li>
+</ul>
+
+<h2 id="summary">小结</h2>
+
+<ol class="steps">
+  <li><strong>分块</strong>用基于文档类型的递归分块切分 README。</li>
+  <li><strong>嵌入与索引</strong>用 <code>mxbai-embed-large</code> 生成 embedding，存进 Chroma。</li>
+  <li><strong>模板</strong>system 消息负责角色、接地、不确定性处理；user 消息放上下文和问题。</li>
+  <li><strong>组装服务</strong>检索 → 增强 → 流式生成，并带上对话历史。</li>
+  <li><strong>引用</strong>把 source_url 一路带到回答里。</li>
+</ol>
+<p>进阶方向：父子检索、查询重写、重排序、混合检索、LLM 评判者，以及 CAG、API 增强等架构变体。</p>
+
+<div class="exercise">
+  <h3>动手练习</h3>
+  <ol>
+    <li><strong>结构化引用</strong>：用第 6 章的知识，定义一个包含回答字段和来源 ID 列表的 Pydantic 模型，用 Instructor 的流式能力把 JSON 流回客户端。</li>
+    <li><strong>查询重写</strong>：在服务里加一步，用 LLM 重写或扩展用户问题。用一组测试问题衡量答案质量的变化。</li>
+    <li><strong>混合检索</strong>：把 BM25 关键词检索和向量检索结合，在宽泛和精确两类问题上比较相关性。</li>
+  </ol>
+</div>
+
+<div class="box tip">
+  <div class="t">&#127881; 第三部分完成</div>
+  <p>
+    你已经掌握了 LLM 的基本用法、提示工程和 RAG。这些技巧能解决大量问题，
+    但有时你需要模型<strong>本身</strong>在某项技能上变得更强，或者遵循某种特定风格 —— 这就是下一部分<strong>微调</strong>的领域。
+  </p>
+</div>
+
+<div id="pager"></div>
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

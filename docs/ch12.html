@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 12 章 · 从工作流到智能体 — AI 开发者指南</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="12">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 12 章 · 第五部分开篇</span>
+<h1>从工作流到自主智能体</h1>
+<p class="lede">
+  到目前为止，我们的 AI 都在“说”：回答问题、生成文本、打标签。这一章开始让 AI “做”：
+  自己规划步骤、调用工具、根据结果调整，直到完成目标。这样的系统叫 <strong>AI Agent（智能体）</strong>。本章没有代码，先把概念理清。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>理解 AI Agent 和普通聊天模型的区别</li>
+    <li>记住 Agent 的三大能力：<strong>规划、使用工具、推理</strong></li>
+    <li>分清三种工作流：<strong>传统工作流、AI 工作流、Agentic 工作流</strong></li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="story">故事：瓶颈只是换了个地方</h2>
+
+<p>
+  微调后的分类模型把混乱的收件箱变得井井有条：销售线索、客服请求、合作提案各归其位，雪崩被驯服了。
+  但分类只是第一步 —— 每个文件夹里的邮件，仍然要人去一封封跟进：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 280" role="img" aria-label="邮件已经分好类，但每个类别仍需要多步骤的人工跟进：调研、找联系人、起草、记录 CRM 等">
+  <rect class="bx-g" x="20" y="100" width="130" height="70" rx="10"/>
+  <text class="ttl on-g" x="85" y="128" text-anchor="middle">分类模型</text>
+  <text class="sm" x="85" y="148" text-anchor="middle">第 11 章 ✓</text>
+  <path class="ln" d="M152 120 L196 54" marker-end="url(#ar)"/><path class="ln" d="M152 135 H194" marker-end="url(#ar)"/><path class="ln" d="M152 150 L196 216" marker-end="url(#ar)"/>
+
+  <rect class="bx-a" x="198" y="30" width="150" height="46" rx="8"/><text class="lbl on-a" x="273" y="58" text-anchor="middle">Sales Lead</text>
+  <rect class="bx-b" x="198" y="112" width="150" height="46" rx="8"/><text class="lbl on-b" x="273" y="140" text-anchor="middle">Support</text>
+  <rect class="bx-p" x="198" y="194" width="150" height="46" rx="8"/><text class="lbl on-p" x="273" y="222" text-anchor="middle">Partnership</text>
+
+  <path class="ln-r" d="M350 53 H386" marker-end="url(#ar-r)"/><path class="ln-r" d="M350 135 H386" marker-end="url(#ar-r)"/><path class="ln-r" d="M350 217 H386" marker-end="url(#ar-r)"/>
+  <rect class="bx-r" x="388" y="22" width="352" height="62" rx="8"/>
+  <text class="sm" x="400" y="44">调研公司 → 找联系方式 → 起草个性化邮件 → 记录到 CRM</text>
+  <text class="sm on-r" x="400" y="66">&#128694; 人工</text>
+  <rect class="bx-r" x="388" y="104" width="352" height="62" rx="8"/>
+  <text class="sm" x="400" y="126">搜索知识库 → 写定制回复 → 发送</text>
+  <text class="sm on-r" x="400" y="148">&#128694; 人工</text>
+  <rect class="bx-r" x="388" y="186" width="352" height="62" rx="8"/>
+  <text class="sm" x="400" y="208">竞品分析 → 查日历 → 安排通话</text>
+  <text class="sm on-r" x="400" y="230">&#128694; 人工</text>
+  <text class="sm" x="380" y="272" text-anchor="middle">团队不再淹没在“未分类的邮件”里，而是淹没在“分好类的邮件带来的跟进任务”里</text>
+</svg>
+<figcaption>图 12-1　瓶颈往下游移动了</figcaption>
+</figure>
+
+<p>这些任务远不只是生成一段文字。每一项都需要：</p>
+<ul>
+  <li>在不同软件之间切换，访问外部网站，执行搜索</li>
+  <li><strong>根据查到的信息做小决策</strong></li>
+  <li>用 CRM、日历、搜索引擎、邮件工具，<strong>按一定顺序编排多个步骤</strong></li>
+</ul>
+
+<div class="box key">
+  <div class="t">&#128273; 问题变了</div>
+  <p>
+    从“AI 能理解并标记这封邮件吗？”变成了 ——
+    “<strong>AI 能对这封邮件采取行动吗？</strong>它能拿到一条销售线索，想清楚跟进需要哪些步骤（调研、找联系人、写邮件、记 CRM），
+    找到执行每一步的工具，然后自己把计划执行完吗？”
+    团队需要的东西，不仅要能思考，还要能<strong>行动</strong>。
+  </p>
+</div>
+
+<h2 id="agent">什么是 AI Agent</h2>
+
+<p>
+  <strong>AI Agent 是一个以 LLM 为“大脑”、能自主规划、推理并执行一系列步骤来达成目标的系统。</strong>
+  普通聊天模型只是回应你的 prompt；Agent 接到一个高层任务，会自己想办法把它完成。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 270" role="img" aria-label="聊天模型对一个问题给出一次回答；Agent 接到任务后拆解成多步并调用工具执行">
+  <text class="ttl on-b" x="190" y="22" text-anchor="middle">聊天模型：像一位可以提问的专家</text>
+  <rect class="bx" x="30" y="40" width="320" height="50" rx="8"/>
+  <text class="sm" x="42" y="62">“我附近最好的素食餐厅有哪些？”</text>
+  <text class="sm" x="42" y="80">What are the best vegan restaurants in my area?</text>
+  <path class="ln" d="M190 92 V116" marker-end="url(#ar)"/>
+  <rect class="bx-b" x="30" y="118" width="320" height="46" rx="8"/>
+  <text class="sm" x="190" y="146" text-anchor="middle">给你一个列表。一问一答，结束。</text>
+  <text class="sm" x="190" y="196" text-anchor="middle">单次、被动</text>
+
+  <path class="ln-d" d="M380 16 V256"/>
+
+  <text class="ttl on-a" x="570" y="22" text-anchor="middle">Agent：像一位自主助理</text>
+  <rect class="bx" x="400" y="40" width="340" height="50" rx="8"/>
+  <text class="sm" x="412" y="62">“找一家评分高、有露台、本周六营业的素食餐厅，</text>
+  <text class="sm" x="412" y="80">帮我订两个人的位子。”</text>
+  <path class="ln" d="M570 92 V110" marker-end="url(#ar)"/>
+  <rect class="bx-a" x="400" y="112" width="340" height="140" rx="10"/>
+  <text class="sm" x="414" y="134">① &#128269; 搜索附近的素食餐厅</text>
+  <text class="sm" x="414" y="156">② &#11088; 按评分和露台筛选</text>
+  <text class="sm" x="414" y="178">③ &#128197; 查周六是否营业</text>
+  <text class="sm" x="414" y="200">④ &#127869; 调用预订工具订两人位</text>
+  <text class="sm on-a" x="414" y="228">多步、主动，自己决定下一步做什么</text>
+</svg>
+<figcaption>图 12-2　聊天模型回答问题，Agent 完成任务</figcaption>
+</figure>
+
+<h3>Agent 的三大能力</h3>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 290" role="img" aria-label="Agent 以 LLM 为大脑，具备规划、工具使用、推理三大能力，形成循环，直到达成目标">
+  <circle class="bx-p" cx="380" cy="145" r="62"/>
+  <text class="ttl on-p" x="380" y="140" text-anchor="middle">LLM</text>
+  <text class="sm" x="380" y="160" text-anchor="middle">“大脑”</text>
+
+  <rect class="bx-b" x="270" y="12" width="220" height="56" rx="10"/>
+  <text class="ttl on-b" x="380" y="36" text-anchor="middle">&#128506; 规划 Planning</text>
+  <text class="sm" x="380" y="56" text-anchor="middle">想清楚需要哪些步骤</text>
+
+  <rect class="bx-g" x="520" y="200" width="220" height="56" rx="10"/>
+  <text class="ttl on-g" x="630" y="224" text-anchor="middle">&#128295; 工具 Tool use</text>
+  <text class="sm" x="630" y="244" text-anchor="middle">搜索、日历、预订……</text>
+
+  <rect class="bx-a" x="20" y="200" width="220" height="56" rx="10"/>
+  <text class="ttl on-a" x="130" y="224" text-anchor="middle">&#129300; 推理 Reasoning</text>
+  <text class="sm" x="130" y="244" text-anchor="middle">分析结果，决定下一步</text>
+
+  <path class="ln-b" d="M490 50 C 610 60, 640 130, 632 196" marker-end="url(#ar-b)"/>
+  <path class="ln-g" d="M518 236 C 400 290, 340 290, 244 236" marker-end="url(#ar-g)"/>
+  <path class="ln-a" d="M126 198 C 110 110, 170 50, 266 42" marker-end="url(#ar-a)"/>
+  <text class="sm" x="620" y="110">规划好了，去执行</text>
+  <text class="sm" x="380" y="236" text-anchor="middle">拿到工具返回的结果</text>
+  <text class="sm" x="172" y="104">餐厅关门了？</text>
+  <text class="sm" x="172" y="120">→ 重新规划，换一家</text>
+</svg>
+<figcaption>图 12-3　规划 → 使用工具 → 推理，循环直到目标达成</figcaption>
+</figure>
+
+<div class="tw"><table>
+  <tr><th>能力</th><th>在订餐厅例子里</th></tr>
+  <tr><td><strong>规划 Planning</strong></td><td>决定先搜索素食餐厅，再按评分和露台筛选，最后用工具检查能否预订</td></tr>
+  <tr><td><strong>工具 Tool use</strong></td><td>用搜索工具找餐厅、用日历工具查日期、用预订工具订座</td></tr>
+  <tr><td><strong>推理 Reasoning</strong></td><td>分析每一步的结果：餐厅关门了就回头换一家；订成功了就结束任务</td></tr>
+</table></div>
+
+<div class="box tip">
+  <div class="t">&#128161; 一句话</div>
+  <p>Agent 就是给一个被动的 LLM 配上<strong>一套工具</strong>和<strong>使用工具的框架</strong>，把它变成主动的、目标导向的问题解决者。</p>
+</div>
+
+<h2 id="workflows">三种工作流</h2>
+
+<p>
+  <strong>工作流（workflow）</strong>是为达成某个业务目标而设计的一系列相互关联的步骤：谁做什么、什么时候做、每步用到什么信息。
+  按照给 AI 多大的<strong>自主权</strong>，可以分成三类：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 390" role="img" aria-label="三种工作流：传统工作流是固定步骤没有 AI；AI 工作流在固定位置插入 LLM；Agentic 工作流中 agent 在思考、规划、执行、反思的循环中自主决定步骤">
+  <text class="ttl" x="20" y="24">① 传统工作流：没有 AI</text>
+  <rect class="bx" x="20" y="36" width="100" height="40" rx="8"/><text class="sm" x="70" y="61" text-anchor="middle">用户输入</text>
+  <rect class="bx-b" x="160" y="36" width="100" height="40" rx="8"/><text class="sm" x="210" y="61" text-anchor="middle">步骤 1</text>
+  <rect class="bx-b" x="300" y="36" width="100" height="40" rx="8"/><text class="sm" x="350" y="61" text-anchor="middle">步骤 2</text>
+  <rect class="bx-b" x="440" y="36" width="100" height="40" rx="8"/><text class="sm" x="490" y="61" text-anchor="middle">步骤 X</text>
+  <rect class="bx-g" x="580" y="36" width="80" height="40" rx="8"/><text class="sm" x="620" y="61" text-anchor="middle">完成</text>
+  <path class="ln" d="M122 56 H156" marker-end="url(#ar)"/><path class="ln" d="M262 56 H296" marker-end="url(#ar)"/><path class="ln" d="M402 56 H436" marker-end="url(#ar)"/><path class="ln" d="M542 56 H576" marker-end="url(#ar)"/>
+  <text class="sm" x="680" y="52">确定性</text><text class="sm" x="680" y="68">规则驱动</text>
+
+  <text class="ttl" x="20" y="116">② AI 工作流：AI 在预定位置</text>
+  <rect class="bx" x="20" y="128" width="100" height="40" rx="8"/><text class="sm" x="70" y="153" text-anchor="middle">用户输入</text>
+  <rect class="bx-b" x="160" y="128" width="100" height="40" rx="8"/><text class="sm" x="210" y="153" text-anchor="middle">步骤 1</text>
+  <rect class="bx-p" x="300" y="128" width="100" height="40" rx="8"/><text class="sm on-p" x="350" y="146" text-anchor="middle">LLM</text><text class="sm" x="350" y="161" text-anchor="middle">生成 / 分类</text>
+  <rect class="bx-b" x="440" y="128" width="100" height="40" rx="8"/><text class="sm" x="490" y="153" text-anchor="middle">步骤 X</text>
+  <rect class="bx-g" x="580" y="128" width="80" height="40" rx="8"/><text class="sm" x="620" y="153" text-anchor="middle">完成</text>
+  <path class="ln" d="M122 148 H156" marker-end="url(#ar)"/><path class="ln" d="M262 148 H296" marker-end="url(#ar)"/><path class="ln" d="M402 148 H436" marker-end="url(#ar)"/><path class="ln" d="M542 148 H576" marker-end="url(#ar)"/>
+  <text class="sm" x="680" y="144">顺序固定</text><text class="sm" x="680" y="160">可预测</text>
+
+  <text class="ttl" x="20" y="208">③ Agentic 工作流：AI 自主决定怎么做</text>
+  <rect class="bx" x="20" y="270" width="100" height="40" rx="8"/><text class="sm" x="70" y="295" text-anchor="middle">用户输入</text>
+  <path class="ln" d="M122 290 H176" marker-end="url(#ar)"/>
+  <rect class="bx-d" x="180" y="220" width="380" height="150" rx="14"/>
+  <text class="ttl on-a" x="370" y="240" text-anchor="middle">AI Agent</text>
+  <rect class="bx-a" x="200" y="252" width="130" height="36" rx="8"/><text class="lbl on-a" x="265" y="275" text-anchor="middle">思考 Think</text>
+  <rect class="bx-b" x="410" y="252" width="130" height="36" rx="8"/><text class="lbl on-b" x="475" y="275" text-anchor="middle">规划 Plan</text>
+  <rect class="bx-g" x="410" y="320" width="130" height="36" rx="8"/><text class="lbl on-g" x="475" y="336" text-anchor="middle">执行 Execute</text><text class="sm" x="475" y="350" text-anchor="middle">调用工具</text>
+  <rect class="bx-p" x="200" y="320" width="130" height="36" rx="8"/><text class="lbl on-p" x="265" y="343" text-anchor="middle">反思 Reflect</text>
+  <path class="ln" d="M332 270 H406" marker-end="url(#ar)"/>
+  <path class="ln" d="M475 290 V316" marker-end="url(#ar)"/>
+  <path class="ln" d="M408 338 H334" marker-end="url(#ar)"/>
+  <path class="ln" d="M265 318 V292" marker-end="url(#ar)"/>
+  <path class="ln" d="M562 290 H576" marker-end="url(#ar)"/>
+  <rect class="bx-g" x="580" y="270" width="80" height="40" rx="8"/><text class="sm" x="620" y="295" text-anchor="middle">完成</text>
+  <text class="sm on-a" x="680" y="286">非确定性</text><text class="sm on-a" x="680" y="302">自适应</text>
+</svg>
+<figcaption>图 12-4　从固定流水线，到插入 AI 的流水线，再到自己转圈的 Agent</figcaption>
+</figure>
+
+<h3>① 传统工作流</h3>
+<p>
+  预先定义好的、基于规则的任务序列，通常用 ETL、BPM 系统或集成平台（iPaaS）实现。<strong>确定性</strong>：按固定逻辑走，
+  常由事件或定时触发，擅长自动化重复任务和在应用间搬数据。
+</p>
+<p><strong>弱点</strong>：刚性，难以适应变化和做复杂决策，遇到异常往往需要人工介入。</p>
+<p><em>例子：按预定规则自动排序和归档文档的脚本。</em></p>
+
+<h3>② AI 工作流</h3>
+<p>
+  结构化的线性任务序列，<strong>在预定位置使用 AI</strong>，上一步的输出是下一步的输入。
+  强调可预测性和控制，适合要求一致性和可靠性的流程；借助 AI 处理规则系统应付不了的细致任务。
+</p>
+<p><strong>弱点</strong>：并非完全自主，关键决策仍依赖人工监督。</p>
+<p><em>例子：用 AI 做情感分析来路由客服工单，但复杂问题仍由人工客服解决。本书第 5–11 章做的基本都是这一类。</em></p>
+
+<h3>③ Agentic 工作流</h3>
+<p>
+  工作流里加入了能<strong>自主决策、采取行动</strong>的 AI Agent。整体仍有结构，但在某些环节 Agent 可以自己选择用什么工具、怎么推进。
+  这引入了<strong>非确定性</strong>：Agent 的选择会因情境而不同。它能独立规划、执行、适应，利用外部工具和环境反馈达成目标，甚至随时间优化自己的流程。
+</p>
+<p><strong>代价</strong>：需要仔细监控和控制，确保 Agent 的行为与期望结果一致。</p>
+<p><em>例子：一个管理旅行行程的 Agent，根据你的偏好订机票、酒店和活动，并主动应对航班变化、实时通知你。</em></p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 150" role="img" aria-label="自主程度光谱：传统工作流自主最低，AI 工作流居中，Agentic 工作流自主最高；越往右越灵活，也越需要监控">
+  <rect class="fill-b" x="40" y="50" width="226" height="16" rx="8"/>
+  <rect class="fill-p" x="266" y="50" width="226" height="16" rx="8"/>
+  <rect class="fill-a" x="492" y="50" width="228" height="16" rx="8"/>
+  <circle class="dot-b" cx="150" cy="58" r="11"/><circle class="dot-p" cx="380" cy="58" r="11"/><circle class="dot-a" cx="610" cy="58" r="11"/>
+  <text class="ttl on-b" x="150" y="36" text-anchor="middle">传统</text>
+  <text class="ttl on-p" x="380" y="36" text-anchor="middle">AI 工作流</text>
+  <text class="ttl on-a" x="610" y="36" text-anchor="middle">Agentic</text>
+  <text class="sm" x="40" y="96">可预测、可控</text>
+  <text class="sm" x="720" y="96" text-anchor="end">灵活、自主</text>
+  <text class="sm" x="380" y="130" text-anchor="middle">越往右越能应对意外，但也越需要监控 —— 选能满足需求的最左边那个</text>
+</svg>
+<figcaption>图 12-5　AI 自主程度的光谱</figcaption>
+</figure>
+
+<h2 id="compare">对比速查</h2>
+
+<div class="tw"><table>
+  <tr><th>维度</th><th>传统工作流</th><th>AI 工作流</th><th>Agentic 工作流</th></tr>
+  <tr><td>AI 参与</td><td>无</td><td>有，在预定位置</td><td>有，自主决定</td></tr>
+  <tr><td>确定性</td><td>确定</td><td>确定（相同输入 → 相同流程）</td><td><strong>非确定</strong></td></tr>
+  <tr><td>步骤顺序</td><td>固定</td><td>固定</td><td><strong>由 Agent 动态决定</strong></td></tr>
+  <tr><td>适应性</td><td>差</td><td>中等</td><td><strong>强</strong></td></tr>
+  <tr><td>人工监督</td><td>处理异常</td><td>关键决策仍需要</td><td>监控是否与目标一致</td></tr>
+  <tr><td>适合</td><td>可预测的重复任务</td><td>需要一致性和可靠性的流程</td><td>需要适应和解决问题的复杂任务</td></tr>
+</table></div>
+
+<h2 id="summary">小结</h2>
+
+<ul>
+  <li>LLM、RAG、提示工程、微调都擅长<strong>生成回答</strong>；AI 更大的潜力在于<strong>独立行动、编排任务、和真实世界交互</strong>。</li>
+  <li><strong>AI Agent</strong> = LLM 大脑 + 规划 + 工具 + 推理，接到高层任务后自己想办法完成。</li>
+  <li>三种工作流：传统（无 AI）→ AI 工作流（AI 在固定位置）→ Agentic 工作流（AI 自主决定步骤）。</li>
+  <li>自主性越高越灵活，也越需要监控。</li>
+</ul>
+
+<div class="exercise">
+  <h3>思考题</h3>
+  <ol>
+    <li>你工作中有哪个流程属于“传统工作流”？哪一步最适合插入 AI，变成 AI 工作流？</li>
+    <li>举一个真正需要 Agentic 工作流的任务：它为什么没法事先把步骤写死？</li>
+    <li>如果让 Agent 自主给客户发邮件，你会设置哪些监控和人工确认环节？</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

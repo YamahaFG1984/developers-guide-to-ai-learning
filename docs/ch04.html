@@ -1,0 +1,651 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 4 章 · 提示工程基础 — AI 开发者指南</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="4">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 4 章 · 第二部分开篇</span>
+<h1>提示工程基础</h1>
+<p class="lede">
+  你连上 LLM，发一个简单的 prompt，也许答得不错，也许不行。改了几个词，模型突然像换了一个人。
+  <strong>没换模型，没改代码，只是换了措辞。</strong>那一刻你就会明白：提示工程不是锦上添花，而是必需品。
+</p>
+
+<div class="box key">
+  <div class="t">&#128273; 本章核心</div>
+  <p>
+    LLM 不是魔法，它只是根据你的 prompt 预测一串 token。<strong>它并不理解你的意思，它只知道你打了什么字。</strong>
+    提示工程就是在“你需要什么”和“模型生成什么”之间架一座桥。
+  </p>
+</div>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>分清什么问题该用代码解决，什么问题值得交给 LLM</li>
+    <li>写出<strong>详细、清晰、简洁</strong>的 prompt，掌握 prompt 的五大要素</li>
+    <li>理解 <strong>token</strong>、<strong>上下文窗口</strong>，以及它们如何影响成本、准确性和速度</li>
+    <li>知道选模型时要权衡哪些因素</li>
+  </ul>
+</div>
+
+<div class="box tip">
+  <div class="t">&#128161; 边读边试</div>
+  <p>把第 3 章的 FastAPI 服务和 React 前端跑起来，本章每个 prompt 都在浏览器里亲手试一遍，感受会完全不同。</p>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="vs">编程 vs 提示</h2>
+
+<p>先看一个传统函数：从邮箱地址里取出域名。</p>
+
+<div class="code" data-lang="python">
+<pre>
+def get_email_domain(email: str) -&gt; str:
+    return email.split('@')[1]
+
+print(get_email_domain("info@focus.dev"))   # focus.dev
+print(get_email_domain(42))                 # AttributeError: 'int' object has no attribute 'split'
+</pre>
+</div>
+
+<p>同样的事，用一句 prompt 也能做到：</p>
+
+<div class="prompt">
+  <div class="h">Prompt · Llama 3.2 3B</div>
+  <div class="b">Given an email address, you will return only the complete domain name from that email address. Email Address: info@focus.dev, Domain:</div>
+  <div class="b out">focus.dev</div>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 230" role="img" aria-label="函数只接受一种输入、只做一件事；LLM 能理解各种输入、做各种事">
+  <text class="ttl" x="190" y="24" text-anchor="middle">函数：窄而精确</text>
+  <rect class="bx" x="20" y="80" width="100" height="40" rx="8"/><text class="mono" x="70" y="105" text-anchor="middle">str 邮箱</text>
+  <path class="ln" d="M122 100 H152" marker-end="url(#ar)"/>
+  <rect class="bx-b" x="154" y="70" width="120" height="60" rx="10"/>
+  <text class="mono on-b" x="214" y="98" text-anchor="middle">split('@')</text>
+  <text class="sm" x="214" y="116" text-anchor="middle">只会这一件事</text>
+  <path class="ln" d="M276 100 H306" marker-end="url(#ar)"/>
+  <rect class="bx-g" x="308" y="80" width="60" height="40" rx="8"/><text class="mono on-g" x="338" y="105" text-anchor="middle">域名</text>
+  <rect class="bx-r" x="20" y="150" width="100" height="36" rx="8"/><text class="mono on-r" x="70" y="173" text-anchor="middle">42</text>
+  <path class="ln-r" d="M122 168 L180 134" marker-end="url(#ar-r)"/>
+  <text class="sm on-r" x="190" y="176">报错，明确失败</text>
+
+  <path class="ln-d" d="M390 20 V210"/>
+
+  <text class="ttl" x="575" y="24" text-anchor="middle">LLM：宽而灵活</text>
+  <rect class="bx" x="410" y="44" width="110" height="28" rx="6"/><text class="sm" x="465" y="63" text-anchor="middle">邮箱</text>
+  <rect class="bx" x="410" y="80" width="110" height="28" rx="6"/><text class="sm" x="465" y="99" text-anchor="middle">西班牙语推文</text>
+  <rect class="bx" x="410" y="116" width="110" height="28" rx="6"/><text class="sm" x="465" y="135" text-anchor="middle">一段合同</text>
+  <rect class="bx" x="410" y="152" width="110" height="28" rx="6"/><text class="sm" x="465" y="171" text-anchor="middle">任何文字…</text>
+  <path class="ln" d="M522 58 L570 100"/><path class="ln" d="M522 94 L570 106"/><path class="ln" d="M522 130 L570 114"/><path class="ln" d="M522 166 L570 120"/>
+  <rect class="bx-p" x="572" y="80" width="80" height="56" rx="10"/><text class="ttl on-p" x="612" y="113" text-anchor="middle">LLM</text>
+  <path class="ln" d="M654 108 H686" marker-end="url(#ar)"/>
+  <text class="lbl" x="692" y="104">取决于</text>
+  <text class="lbl" x="692" y="120">prompt</text>
+  <text class="sm" x="575" y="206" text-anchor="middle">灵活的代价：想要限定输出，就必须把指令写仔细</text>
+</svg>
+<figcaption>图 4-1　函数用途单一；LLM 对语言的理解让它几乎什么都能试一试</figcaption>
+</figure>
+
+<p>
+  当然，你永远不该为这么简单的任务去调 LLM —— 又慢又贵。但这个例子说明：<strong>LLM 对语言的理解让它极其多才多艺</strong>。
+  而这种灵活性也意味着，如果你想限制它的回答，就得仔细下指令。
+</p>
+
+<div class="box note">
+  <div class="t">&#9432; 本书的 prompt 展示格式</div>
+  <p>书中会同时给出 prompt、回答，以及生成回答的模型（如 Llama 3.2 3B）。如果改过模型配置，会在模型名后注明。你自己跑时回答可能略有不同，这很正常。</p>
+</div>
+
+<h2 id="sentiment">一个真正适合 LLM 的场景：情感分析</h2>
+
+<p>
+  一家创业公司想管好社交媒体上的口碑：自动判断每条提到公司的帖子是<strong>正面、中性还是负面</strong>，
+  把负面的顶到最前面让人跟进。这叫<strong>情感分析（sentiment analysis）</strong>，本质是一个<strong>分类问题</strong>。
+</p>
+<p>
+  传统机器学习模型也能做情感分析，但真实的帖子有<strong>多种语言</strong>、有<strong>文化上的弦外之音</strong>、还有<strong>网络俚语</strong>。
+  这些恰恰是 LLM 的强项。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 250" role="img" aria-label="四条不同语言和风格的帖子经过 LLM 判断情感，负面帖子被排到最前面">
+  <rect class="bx" x="20" y="20" width="300" height="42" rx="8"/><text class="sm" x="32" y="46">My order never arrived and customer service…</text>
+  <rect class="bx" x="20" y="72" width="300" height="42" rx="8"/><text class="sm" x="32" y="98">Thank you! Can't wait to try this new shampoo!</text>
+  <rect class="bx" x="20" y="124" width="300" height="42" rx="8"/><text class="sm" x="32" y="150">No confiaría en @AcmeCorp.（西班牙语）</text>
+  <rect class="bx" x="20" y="176" width="300" height="42" rx="8"/><text class="sm" x="32" y="202">Everything on the website is so mid.（俚语）</text>
+
+  <path class="ln" d="M322 41 L380 110"/><path class="ln" d="M322 93 L380 115"/><path class="ln" d="M322 145 L380 125"/><path class="ln" d="M322 197 L380 130"/>
+  <rect class="bx-p" x="382" y="88" width="110" height="64" rx="10"/>
+  <text class="ttl on-p" x="437" y="116" text-anchor="middle">LLM</text>
+  <text class="sm" x="437" y="136" text-anchor="middle">正面/中性/负面？</text>
+  <path class="ln" d="M494 120 H530" marker-end="url(#ar)"/>
+
+  <rect class="bx-r" x="532" y="20" width="208" height="36" rx="7"/><text class="lbl on-r" x="546" y="43">负面 · 订单没到</text>
+  <rect class="bx-r" x="532" y="64" width="208" height="36" rx="7"/><text class="lbl on-r" x="546" y="87">负面 · 不会信任</text>
+  <rect class="bx-r" x="532" y="108" width="208" height="36" rx="7"/><text class="lbl on-r" x="546" y="131">负面 · so mid</text>
+  <rect class="bx-g" x="532" y="152" width="208" height="36" rx="7"/><text class="lbl on-g" x="546" y="175">正面 · 期待洗发水</text>
+  <text class="sm" x="636" y="212" text-anchor="middle">负面置顶 → 客服优先处理</text>
+</svg>
+<figcaption>图 4-2　情感分析：多语言、俚语都难不倒 LLM</figcaption>
+</figure>
+
+<div class="tw"><table>
+  <tr><th>帖子（prompt 的末尾部分）</th><th>Llama 3.2 的回答</th></tr>
+  <tr><td>My order from @AcmeCorp never arrived and customer service wasn't helpful.</td><td>Sentiment: Negative</td></tr>
+  <tr><td>Thank you @AcmeCorp! Can't wait to try this new shampoo!</td><td>Sentiment: Positive</td></tr>
+  <tr><td>No confiaría en @AcmeCorp.</td><td>Sentiment: Negative</td></tr>
+  <tr><td>Everything I've seen on the @AcmeCorp website is so mid.</td><td>Sentiment: Negative</td></tr>
+</table></div>
+
+<p>完整 prompt 的开头都是 <code>Tell me if the following statement is positive, neutral, or negative:</code>，结尾是 <code>Sentiment:</code>。</p>
+
+<h3>别只看答案，还要看理由</h3>
+
+<p>西班牙语和俚语那两条真的对吗？在 prompt 结尾加一句 <strong>Explain your reasoning.</strong> 让模型说出理由：</p>
+
+<div class="prompt">
+  <div class="h">Prompt · 让模型解释</div>
+  <div class="b">Tell me if the following statement is positive, neutral, or negative: "Everything I've seen on the @AcmeCorp website is so mid." <mark>Explain your reasoning.</mark></div>
+  <div class="b out">负面。① "mid" 通常带负面含义，指平庸、质量一般；② 句子语气挑剔、不屑；③ "so mid" 常用来表达轻视或无聊。</div>
+</div>
+
+<div class="box key">
+  <div class="t">&#128273; 关键方法：答对 ≠ 推理对</div>
+  <p>
+    即使答案看起来正确，推理过程也可能有漏洞，换个例子就会答错。
+    <strong>让模型解释推理</strong>，是验证它“不仅答对、而且理由站得住”的好办法。
+    如果你自己也不认识 “mid” 这个词，就该去查一下，核实模型的说法。第 5 章的<strong>思维链（CoT）</strong>会把这个技巧发扬光大。
+  </p>
+</div>
+
+<div class="box warn">
+  <div class="t">&#9888; 输出格式不稳定</div>
+  <p>
+    上面的回答都带着 <code>Sentiment:</code> 前缀。你可以在代码里解析它，但换个模型格式可能变，
+    <strong>同一个模型不同次调用也可能变</strong>。我们需要更精确地告诉模型“怎么回答” —— 后面的提示技巧和第 6 章的结构化输出会解决这个问题。
+  </p>
+</div>
+
+<h2 id="fit">你的需求适合用 LLM 吗？</h2>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 170" role="img" aria-label="一条光谱：左边是规则明确、用代码解决的问题，右边是需要语言理解、适合 LLM 的问题">
+  <rect class="fill-b" x="40" y="60" width="340" height="14" rx="7" opacity=".85"/>
+  <rect class="fill-p" x="380" y="60" width="340" height="14" rx="7" opacity=".85"/>
+  <text class="ttl on-b" x="40" y="44">规则明确 → 写代码</text>
+  <text class="ttl on-p" x="720" y="44" text-anchor="end">需要理解语言 / 复杂模式 → 试 LLM</text>
+  <circle class="dot-b" cx="110" cy="67" r="9"/>
+  <text class="lbl" x="110" y="100" text-anchor="middle">解析邮箱域名</text>
+  <circle class="dot-b" cx="260" cy="67" r="9"/>
+  <text class="lbl" x="260" y="100" text-anchor="middle">计算订单总价</text>
+  <circle class="dot-p" cx="500" cy="67" r="9"/>
+  <text class="lbl" x="500" y="100" text-anchor="middle">情感分类</text>
+  <circle class="dot-p" cx="650" cy="67" r="9"/>
+  <text class="lbl" x="650" y="100" text-anchor="middle">从邮件提取销售线索</text>
+  <text class="sm" x="380" y="146" text-anchor="middle">经验法则：如果一件事用传统编程感觉“不可能”，就写个 prompt 试试 —— 又快又便宜</text>
+</svg>
+<figcaption>图 4-3　本书聚焦于右半边：需要语言理解或复杂模式识别的问题</figcaption>
+</figure>
+
+<p>
+  Prompt 之所以强大，是因为 LLM 能<strong>在上下文中学习（learn in context）</strong>：就算它没专门训练过某项任务，
+  你也能通过提示技巧“教会”它。但要始终记住，影响输出的有三个因素：
+</p>
+<ol>
+  <li>你调用的模型的<strong>能力</strong></li>
+  <li>它的<strong>训练数据</strong>（以及其中的偏见）</li>
+  <li>模型的<strong>配置参数</strong>（第 6 章）</li>
+</ol>
+<p>每个模型对同一个 prompt 的反应都至少略有不同。如果需求看起来适合 LLM 但效果不理想，<strong>试试换模型或调配置</strong>。</p>
+
+<div class="box eg">
+  <div class="t">&#128200; 和真实基线比，而不是和完美比</div>
+  <p>
+    担心 AI 不总是对？举个例子：从邮件里提取销售线索（姓名、职位、公司、电话）。
+    如果人工处理有 3% 出错，准确率就是 97%。你的 AI 方案如果达到 98%，它不完美，<strong>但比人强</strong>。
+    前提是你在足够多的真实样本上测过。
+  </p>
+</div>
+
+<h2 id="clear">好 prompt 的三个特质：详细、清晰、简洁</h2>
+
+<p>作为开发者，我们其实很有优势：<strong>我们天天在做的，就是把模糊的想法变成计算机能执行的分步指令。</strong></p>
+
+<div class="cards">
+  <div class="card"><span class="ic">&#128269;</span><h4>详细 Detailed</h4><p>说清楚要模型做什么，不留误解空间。</p></div>
+  <div class="card"><span class="ic">&#128161;</span><h4>清晰 Clear</h4><p>用简单直接的语言解释任务。</p></div>
+  <div class="card"><span class="ic">&#9986;</span><h4>简洁 Concise</h4><p>去掉与任务无关的废话。</p></div>
+</div>
+
+<p>对比两个 prompt：</p>
+
+<div class="vs">
+  <div class="old"><div class="h">Prompt 1 · 模糊</div>
+    <div class="prompt" style="margin:0;border:none;border-radius:0"><div class="b">Tell me about the Beatles in 500 words or less.</div></div>
+  </div>
+  <div class="new"><div class="h">Prompt 2 · 具体</div>
+    <div class="prompt" style="margin:0;border:none;border-radius:0"><div class="b"><mark>You are an expert on the history of popular music.</mark> Summarize the music career of the Beatles <mark>for someone who knows nothing about the history of popular music.</mark> Provide their accomplishments <mark>prior to breaking up</mark> and their lasting influence on popular music. <mark>Focus on the records they released, the critical and commercial reception of each record</mark>, and how it changed popular music. <mark>Explain in simple terms</mark> and keep your response under 500 words.</div></div>
+  </div>
+</div>
+
+<p>
+  两个 prompt 都会得到关于披头士的介绍。但 <strong>prompt 越开放，“可接受的回答”就越多</strong>。
+  模型并不是在“猜”你的意思，它只是在概率上从一大片可能的回答里挑一个 —— 你没说清的地方，它会用你意想不到的方式填上。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 250" role="img" aria-label="模糊的 prompt 对应一大片可能的回答，具体的 prompt 把可能的回答收窄到你想要的区域">
+  <circle class="bx-d" cx="200" cy="125" r="105"/>
+  <text class="ttl" x="200" y="24" text-anchor="middle">Prompt 1 的可能回答</text>
+  <circle class="dot-a" cx="140" cy="90" r="5"/><circle class="dot-p" cx="250" cy="80" r="5"/><circle class="dot-b" cx="180" cy="170" r="5"/>
+  <circle class="dot-g" cx="270" cy="150" r="5"/><circle class="dot-r" cx="120" cy="140" r="5"/><circle class="dot-p" cx="220" cy="120" r="5"/>
+  <circle class="dot-b" cx="160" cy="60" r="5"/><circle class="dot-a" cx="240" cy="195" r="5"/><circle class="dot-g" cx="130" cy="190" r="5"/>
+  <text class="sm" x="200" y="248" text-anchor="middle">成员八卦？解散原因？单曲列表？都“合理”</text>
+
+  <path class="ln-a" d="M330 125 H420" marker-end="url(#ar-a)"/>
+  <text class="sm on-a" x="375" y="115" text-anchor="middle">加上约束</text>
+
+  <circle class="bx-d" cx="560" cy="125" r="105"/>
+  <circle class="bx-a" cx="560" cy="125" r="38"/>
+  <text class="ttl" x="560" y="24" text-anchor="middle">Prompt 2 的可能回答</text>
+  <circle class="dot-a" cx="548" cy="115" r="5"/><circle class="dot-a" cx="572" cy="130" r="5"/><circle class="dot-a" cx="556" cy="140" r="5"/>
+  <text class="sm on-a" x="560" y="182" text-anchor="middle">唱片 + 口碑 + 影响力</text>
+  <text class="sm" x="560" y="248" text-anchor="middle">角色、受众、时间段、关注点都限定了</text>
+</svg>
+<figcaption>图 4-4　每多一条约束，模型可选的“合理回答”就少一大片</figcaption>
+</figure>
+
+<div class="tw"><table>
+  <tr><th>维度</th><th>Prompt 1</th><th>Prompt 2</th></tr>
+  <tr><td>主题</td><td>披头士</td><td>披头士</td></tr>
+  <tr><td>角色（persona）</td><td>—</td><td>流行音乐史专家</td></tr>
+  <tr><td>受众 / 语言难度</td><td>—</td><td>完全不懂流行音乐史的人，用简单的话</td></tr>
+  <tr><td>时间范围</td><td>—</td><td>乐队解散之前</td></tr>
+  <tr><td>关注点</td><td>—</td><td>唱片、口碑与商业反响、对流行音乐的改变</td></tr>
+  <tr><td>长度</td><td>≤ 500 词</td><td>≤ 500 词</td></tr>
+</table></div>
+
+<p>这两个都是<strong>零样本提示（zero-shot）</strong>：没给任何示例，完全依赖模型的训练数据。第 5 章会讲一个示例（one-shot）和多个示例（few-shot）的写法。</p>
+
+<h2 id="elements">Prompt 的五大要素</h2>
+
+<p>写 prompt 没有唯一正确的格式，但下面这个心智框架非常好用。一个完整的 prompt 通常由这五块拼成：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 300" role="img" aria-label="Prompt 的五大要素：指令、上下文、示例、查询、输出格式">
+  <rect class="bx" x="20" y="14" width="440" height="272" rx="12"/>
+  <text class="sm" x="36" y="36">一个完整的 prompt</text>
+  <rect class="bx-a" x="36" y="46" width="408" height="38" rx="7"/><text class="ttl on-a" x="50" y="70">Instruction 指令</text>
+  <rect class="bx-g" x="36" y="92" width="408" height="56" rx="7"/><text class="ttl on-g" x="50" y="124">Context 上下文</text>
+  <rect class="bx-p" x="36" y="156" width="408" height="38" rx="7"/><text class="ttl on-p" x="50" y="180">Examples 示例</text>
+  <rect class="bx-b" x="36" y="202" width="408" height="34" rx="7"/><text class="ttl on-b" x="50" y="224">Query 查询</text>
+  <rect class="bx-d" x="36" y="244" width="408" height="32" rx="7"/><text class="ttl" x="50" y="265">Output format 输出格式</text>
+
+  <text class="lbl" x="480" y="70">让模型做什么（一句话或分步骤）</text>
+  <text class="lbl" x="480" y="116">完成任务需要的背景资料</text>
+  <text class="sm" x="480" y="134">RAG 就是自动提供这一块（第 8 章）</text>
+  <text class="lbl" x="480" y="180">输入 → 输出的示范（风格、格式）</text>
+  <text class="lbl" x="480" y="224">真正要问的问题</text>
+  <text class="lbl" x="480" y="258">JSON / CSV / Markdown…</text>
+  <text class="sm" x="480" y="274">也可以用 API 参数指定（第 6 章）</text>
+</svg>
+<figcaption>图 4-5　五大要素不必每次都齐全，但让它们<strong>清晰可辨</strong>能明显改善回答</figcaption>
+</figure>
+
+<h3>一个真实例子：AI 客服</h3>
+
+<div class="prompt">
+  <div class="h">客服 prompt（标注了各要素）</div>
+  <div class="b"><mark>[Instruction]</mark> Answer the question using only the following context:
+
+<mark>[Context]</mark> To reset your password, follow these simple steps:
+1. Click on the "Forgot Password" link on the login page.
+2. Enter your registered email address.
+3. Check your email for a password reset link.
+4. Click the link in the email (valid for 24 hours).
+5. Create a new password that meets our security requirements:
+   - At least 8 characters long
+   - Contains uppercase and lowercase letters
+   - Includes at least one number
+   - Has at least one special character
+If you don't receive the reset email within 5 minutes, please check your spam folder or contact our support team.
+For security reasons, your old password will be immediately invalidated once you create a new one.
+
+<mark>[Query]</mark> Question: I'm having password issues. Can you help me log in?</div>
+</div>
+
+<p>这个 prompt 能用，但还有很大改进空间：</p>
+<ul>
+  <li><strong>指令太单薄</strong>：模型该表现得专业还是亲切？用户问了知识库里没有的东西怎么办？用户不怀好意呢？
+    → 后面会用 <strong>persona（角色）</strong>、<strong>不确定性处理</strong>、<strong>护栏（guardrails）</strong>来补强。</li>
+  <li><strong>边界不清楚</strong>：文章从哪开始、到哪结束？模型怎么区分指令、资料和用户问题？
+    → 第 5 章用<strong>分隔符</strong>解决。</li>
+</ul>
+
+<h2 id="window">上下文窗口</h2>
+
+<p>
+  LLM 对单次请求能接收的文本量有上限，超过就直接拒绝。这个上限叫<strong>上下文窗口（context window）</strong>，用 token 数来衡量。
+  下面是几个常见模型的窗口大小：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 220" role="img" aria-label="上下文窗口对比：text-embedding-3-small 约 8 千，Claude Haiku 4.5 20 万，GPT-5 mini 40 万，Gemini 2.5 Flash 约 105 万 token">
+  <text class="ttl" x="20" y="44">Gemini 2.5 Flash</text>
+  <rect class="fill-b" x="230" y="30" width="500" height="22" rx="4"/>
+  <text class="sm wt" x="720" y="46" text-anchor="end">1,048,576</text>
+
+  <text class="ttl" x="20" y="88">GPT-5 mini</text>
+  <rect class="fill-g" x="230" y="74" width="191" height="22" rx="4"/>
+  <text class="lbl" x="430" y="90">400,000</text>
+
+  <text class="ttl" x="20" y="132">Claude Haiku 4.5</text>
+  <rect class="fill-a" x="230" y="118" width="95" height="22" rx="4"/>
+  <text class="lbl" x="334" y="134">200,000</text>
+
+  <text class="ttl" x="20" y="176">text-embedding-3-small</text>
+  <rect class="fill-p" x="230" y="162" width="4" height="22" rx="2"/>
+  <text class="lbl" x="242" y="178">8,191（嵌入模型，第 7 章）</text>
+  <text class="sm" x="230" y="210">单位：token（线性刻度）</text>
+</svg>
+<figcaption>图 4-6　不同模型的上下文窗口差距可以超过 100 倍</figcaption>
+</figure>
+
+<div class="box key">
+  <div class="t">&#128273; 窗口大 ≠ 应该塞满</div>
+  <p>
+    这就是<strong>上下文工程</strong>登场的地方：不要把所有东西一股脑塞进 prompt，而要有意识地筛选和整理，
+    让模型<strong>只看到它需要的内容</strong>，并以好用的形式呈现。下面几节会解释为什么。
+  </p>
+</div>
+
+<h2 id="tokens">Token 与分词</h2>
+
+<p>
+  每个模型都有自己把文本切成 token 的方式。OpenAI 给了一个经验法则：
+  <strong>常见英文里，1 个 token ≈ 4 个字符 ≈ ¾ 个单词</strong>，所以 100 个 token 大约是 75 个词。
+  你可以在 <a href="https://platform.openai.com/tokenizer">OpenAI Tokenizer</a> 网页上亲手试试。
+</p>
+
+<h3>用 tiktoken 数 token</h3>
+
+<div class="code" data-lang="python" data-file="part2/basic_examples/tokenization.py">
+<pre>
+import tiktoken
+
+def count_tokens(text: str, model_name: str):
+    # All OpenAI models are supported
+    encoding = tiktoken.encoding_for_model(model_name)   # ❶ 拿到该模型的编码器
+
+    # Tokenize the text
+    tokens = encoding.encode(text)                        # ❷ 把文本编码成 token ID
+
+    print(tokens)
+    print(f"Number of tokens: {len(tokens)}")
+
+model_name = "gpt-5-mini"
+sample_text = "I'm having password issues. Can you help me log in?"
+
+count_tokens(sample_text, model_name)
+</pre>
+</div>
+
+<div class="code" data-lang="text">
+<pre>
+[15390, 4566, 6088, 6086, 13, 4101, 481, 1652, 668, 2142, 306, 30]
+Number of tokens: 12
+</pre>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 170" role="img" aria-label="一句话被切成 12 个 token，每个 token 对应一个数字 ID，标点也单独成为 token">
+  <g>
+    <rect class="bx-b" x="20"  y="30" width="52" height="34" rx="6"/><text class="mono" x="46"  y="52" text-anchor="middle">I'm</text>
+    <rect class="bx-g" x="76"  y="30" width="72" height="34" rx="6"/><text class="mono" x="112" y="52" text-anchor="middle">␣having</text>
+    <rect class="bx-p" x="152" y="30" width="92" height="34" rx="6"/><text class="mono" x="198" y="52" text-anchor="middle">␣password</text>
+    <rect class="bx-b" x="248" y="30" width="72" height="34" rx="6"/><text class="mono" x="284" y="52" text-anchor="middle">␣issues</text>
+    <rect class="bx-r" x="324" y="30" width="26" height="34" rx="6"/><text class="mono" x="337" y="52" text-anchor="middle">.</text>
+    <rect class="bx-g" x="354" y="30" width="50" height="34" rx="6"/><text class="mono" x="379" y="52" text-anchor="middle">␣Can</text>
+    <rect class="bx-p" x="408" y="30" width="50" height="34" rx="6"/><text class="mono" x="433" y="52" text-anchor="middle">␣you</text>
+    <rect class="bx-b" x="462" y="30" width="58" height="34" rx="6"/><text class="mono" x="491" y="52" text-anchor="middle">␣help</text>
+    <rect class="bx-g" x="524" y="30" width="44" height="34" rx="6"/><text class="mono" x="546" y="52" text-anchor="middle">␣me</text>
+    <rect class="bx-p" x="572" y="30" width="50" height="34" rx="6"/><text class="mono" x="597" y="52" text-anchor="middle">␣log</text>
+    <rect class="bx-b" x="626" y="30" width="44" height="34" rx="6"/><text class="mono" x="648" y="52" text-anchor="middle">␣in</text>
+    <rect class="bx-r" x="674" y="30" width="26" height="34" rx="6"/><text class="mono" x="687" y="52" text-anchor="middle">?</text>
+  </g>
+  <text class="sm" x="46"  y="86" text-anchor="middle">15390</text>
+  <text class="sm" x="112" y="86" text-anchor="middle">4566</text>
+  <text class="sm" x="198" y="86" text-anchor="middle">6088</text>
+  <text class="sm" x="284" y="86" text-anchor="middle">6086</text>
+  <text class="sm" x="337" y="86" text-anchor="middle">13</text>
+  <text class="sm" x="379" y="86" text-anchor="middle">4101</text>
+  <text class="sm" x="433" y="86" text-anchor="middle">481</text>
+  <text class="sm" x="491" y="86" text-anchor="middle">1652</text>
+  <text class="sm" x="546" y="86" text-anchor="middle">668</text>
+  <text class="sm" x="597" y="86" text-anchor="middle">2142</text>
+  <text class="sm" x="648" y="86" text-anchor="middle">306</text>
+  <text class="sm" x="687" y="86" text-anchor="middle">30</text>
+  <text class="lbl" x="20" y="124">10 个单词，却是 12 个 token：标点 “.” 和 “?” 各占一个。</text>
+  <text class="lbl" x="20" y="146">长单词还会被拆开：Supercalifragilisticexpialidocious 一个词就是 10 个 token。</text>
+</svg>
+<figcaption>图 4-7　分词结果示意（␣ 表示前面的空格，它通常和单词粘在一起）</figcaption>
+</figure>
+
+<div class="box tip">
+  <div class="t">&#128161; 模型的两个名字</div>
+  <p>代码里用的是模型的<strong>技术名</strong> <code>gpt-5-mini</code>，而宣传材料里叫 “GPT-5 mini”。两者指的是同一个模型。</p>
+</div>
+
+<h3>Token ID 是什么</h3>
+
+<p>
+  输出全是数字：<strong>每个 token ID 是一小段文本的唯一编号</strong>，是模型对文本的内部表示。
+  模型预测的其实是这些编号，再通过一张查找表翻译回文字给我们看。
+  <strong>相同的片段永远对应相同的 ID</strong>，这在相同 token 之间建立了联系，也节省了存储：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 200" role="img" aria-label="两句话里相同的单词得到相同的编号">
+  <text class="sm" x="20" y="22">句子 A：I'm having password issues. Can you help me log in?（按词简化编号）</text>
+  <rect class="bx" x="20" y="32" width="60" height="30" rx="5"/><text class="mono" x="50" y="52" text-anchor="middle">1</text>
+  <rect class="bx" x="84" y="32" width="60" height="30" rx="5"/><text class="mono" x="114" y="52" text-anchor="middle">2</text>
+  <rect class="bx-a" x="148" y="32" width="60" height="30" rx="5"/><text class="mono on-a" x="178" y="52" text-anchor="middle">3</text>
+  <rect class="bx" x="212" y="32" width="60" height="30" rx="5"/><text class="mono" x="242" y="52" text-anchor="middle">4</text>
+  <rect class="bx-b" x="276" y="32" width="60" height="30" rx="5"/><text class="mono on-b" x="306" y="52" text-anchor="middle">5</text>
+  <rect class="bx-b" x="340" y="32" width="60" height="30" rx="5"/><text class="mono on-b" x="370" y="52" text-anchor="middle">6</text>
+  <rect class="bx-b" x="404" y="32" width="60" height="30" rx="5"/><text class="mono on-b" x="434" y="52" text-anchor="middle">7</text>
+  <rect class="bx-b" x="468" y="32" width="60" height="30" rx="5"/><text class="mono on-b" x="498" y="52" text-anchor="middle">8</text>
+  <rect class="bx" x="532" y="32" width="60" height="30" rx="5"/><text class="mono" x="562" y="52" text-anchor="middle">9</text>
+  <rect class="bx" x="596" y="32" width="60" height="30" rx="5"/><text class="mono" x="626" y="52" text-anchor="middle">10</text>
+  <text class="sm" x="50" y="78" text-anchor="middle">I'm</text><text class="sm" x="114" y="78" text-anchor="middle">having</text><text class="sm" x="178" y="78" text-anchor="middle">password</text>
+  <text class="sm" x="242" y="78" text-anchor="middle">issues</text><text class="sm" x="306" y="78" text-anchor="middle">Can</text><text class="sm" x="370" y="78" text-anchor="middle">you</text>
+  <text class="sm" x="434" y="78" text-anchor="middle">help</text><text class="sm" x="498" y="78" text-anchor="middle">me</text><text class="sm" x="562" y="78" text-anchor="middle">log</text><text class="sm" x="626" y="78" text-anchor="middle">in</text>
+
+  <text class="sm" x="20" y="116">句子 B：Can you help me change my password?</text>
+  <rect class="bx-b" x="276" y="126" width="60" height="30" rx="5"/><text class="mono on-b" x="306" y="146" text-anchor="middle">5</text>
+  <rect class="bx-b" x="340" y="126" width="60" height="30" rx="5"/><text class="mono on-b" x="370" y="146" text-anchor="middle">6</text>
+  <rect class="bx-b" x="404" y="126" width="60" height="30" rx="5"/><text class="mono on-b" x="434" y="146" text-anchor="middle">7</text>
+  <rect class="bx-b" x="468" y="126" width="60" height="30" rx="5"/><text class="mono on-b" x="498" y="146" text-anchor="middle">8</text>
+  <rect class="bx-g" x="532" y="126" width="60" height="30" rx="5"/><text class="mono on-g" x="562" y="146" text-anchor="middle">11</text>
+  <rect class="bx-g" x="596" y="126" width="60" height="30" rx="5"/><text class="mono on-g" x="626" y="146" text-anchor="middle">12</text>
+  <rect class="bx-a" x="660" y="126" width="60" height="30" rx="5"/><text class="mono on-a" x="690" y="146" text-anchor="middle">3</text>
+  <text class="sm" x="306" y="172" text-anchor="middle">Can</text><text class="sm" x="370" y="172" text-anchor="middle">you</text><text class="sm" x="434" y="172" text-anchor="middle">help</text>
+  <text class="sm" x="498" y="172" text-anchor="middle">me</text><text class="sm" x="562" y="172" text-anchor="middle">change</text><text class="sm" x="626" y="172" text-anchor="middle">my</text><text class="sm" x="690" y="172" text-anchor="middle">password</text>
+  <path class="ln-a" d="M205 84 C 260 100, 690 96, 690 122" marker-end="url(#ar-a)"/>
+  <text class="sm" x="20" y="194">蓝色、橙色：重复出现的词复用同一个 ID；绿色：新词分配新 ID</text>
+</svg>
+<figcaption>图 4-8　相同的词 = 相同的 ID</figcaption>
+</figure>
+
+<h2 id="cost">别让成本失控</h2>
+
+<p>40 万 token 的窗口看起来很大，好像碰不到上限。但<strong>云端模型通常按 token 收费</strong>，输入和输出分开计价：</p>
+
+<div class="box key">
+  <div class="t">&#128176; 单次请求成本</div>
+  <p style="font-family:var(--mono);font-size:14px">
+    成本 = 输入单价 × 输入 token 数 + 输出单价 × 输出 token 数
+  </p>
+</div>
+
+<div class="tw"><table>
+  <tr><th>模型</th><th>窗口</th><th>输入单价</th><th>输出单价</th></tr>
+  <tr><td>GPT-5 mini</td><td>400,000</td><td>$0.25 / 百万 token</td><td>$2.00 / 百万 token</td></tr>
+  <tr><td>GPT-5</td><td>400,000</td><td>$1.25 / 百万 token</td><td>$10.00 / 百万 token</td></tr>
+  <tr><td>GPT-5 pro</td><td>400,000</td><td>$15.00 / 百万 token</td><td>$120.00 / 百万 token</td></tr>
+</table></div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 190" role="img" aria-label="把 40 万 token 的窗口塞满一次的输入成本：GPT-5 mini 0.1 美元，GPT-5 0.5 美元，GPT-5 pro 6 美元">
+  <text class="sm" x="20" y="20">塞满 40 万 token 发一次请求，<tspan font-weight="700">仅输入部分</tspan>要花：</text>
+  <text class="ttl" x="20" y="60">GPT-5 mini</text>
+  <rect class="fill-g" x="140" y="46" width="8" height="22" rx="3"/><text class="lbl" x="156" y="62">$0.10</text>
+  <text class="ttl" x="20" y="104">GPT-5</text>
+  <rect class="fill-b" x="140" y="90" width="48" height="22" rx="3"/><text class="lbl" x="196" y="106">$0.50</text>
+  <text class="ttl" x="20" y="148">GPT-5 pro</text>
+  <rect class="fill-r" x="140" y="134" width="580" height="22" rx="3"/><text class="sm wt" x="710" y="150" text-anchor="end">$6.00 —— 还没算输出的钱</text>
+  <text class="sm" x="20" y="182">一天调用一千次，差距就是 $100 和 $6000</text>
+</svg>
+<figcaption>图 4-9　模型选错，账单可以差 60 倍</figcaption>
+</figure>
+
+<ol class="steps">
+  <li><strong>从便宜的开始</strong>别一上来就用最贵的模型，先试 GPT-5 mini 这类小模型够不够用。</li>
+  <li><strong>留意“思考型”模型的隐藏开销</strong>GPT-5 pro 这类高级推理模型在输出前会先用额外的 token 做规划。这让它更擅长复杂任务，但 token 用量可能大幅增加。</li>
+  <li><strong>监控用量</strong>看服务商的用量面板，或者直接从 API 响应里读取 token 统计。</li>
+</ol>
+
+<div class="box deep">
+  <div class="t">&#128302; 开放权重模型不是“免费”，是“自己托管”</div>
+  <p>
+    用 Llama、Mistral、Gemma 这类开放权重模型，没有按 token 计费，但你要自己承担算力：
+    一台有像样 GPU 的机器（小模型至少 8–16 GB 显存，大模型远不止）、电费，以及搭服务器、加载模型、扩缩容、保可用的时间和经验。
+    成本没有消失，只是换了一种形式。
+  </p>
+</div>
+
+<h2 id="accuracy">塞太多，准确性和速度都会变差</h2>
+
+<p>就算不差钱，把所有知识库文章都塞进 prompt 也会伤害效果：</p>
+
+<div class="cards">
+  <div class="card"><span class="ic">&#128123;</span><h4>更容易幻觉</h4><p>正确的句子旁边摆着跑题的段落，模型可能拿无关内容来回答。</p></div>
+  <div class="card"><span class="ic">&#128371;</span><h4>中间迷失</h4><p>模型更关注长 prompt 的开头和结尾，中间的关键段落可能被忽略。</p></div>
+  <div class="card"><span class="ic">&#128027;</span><h4>难以调试</h4><p>prompt 越大，模型行为变化时越难定位原因。</p></div>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 230" role="img" aria-label="Lost in the middle：模型对长 prompt 开头和结尾的信息利用得好，中间的信息利用得差，形成 U 形曲线">
+  <path class="ln" d="M60 190 H720"/><path class="ln" d="M60 190 V30"/>
+  <text class="sm" x="60" y="210">prompt 开头</text>
+  <text class="sm" x="390" y="210" text-anchor="middle">中间</text>
+  <text class="sm" x="720" y="210" text-anchor="end">prompt 结尾</text>
+  <text class="sm" x="52" y="40" text-anchor="end">高</text>
+  <text class="sm" x="52" y="186" text-anchor="end">低</text>
+  <text class="sm" x="22" y="115" transform="rotate(-90 22 115)" text-anchor="middle">信息被利用的程度</text>
+  <path class="ln-a" d="M70 50 C 200 150, 300 170, 390 170 S 600 150, 710 46" stroke-width="3"/>
+  <rect class="bx-r" x="300" y="120" width="180" height="28" rx="6"/>
+  <text class="sm on-r" x="390" y="139" text-anchor="middle">放在这里的关键信息容易被忽略</text>
+</svg>
+<figcaption>图 4-10　“中间迷失”（lost in the middle）：重要内容别埋在长 prompt 的正中间</figcaption>
+</figure>
+
+<h3>速度：prompt 越长，每一步越慢</h3>
+
+<p>
+  回忆第 1 章的生成循环：模型每生成<strong>一个</strong>新 token，都要处理<strong>整个 prompt + 已经生成的所有 token</strong>。
+  prompt 越长，每一步要算的东西就越多：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 170" role="img" aria-label="每生成一个新 token 都要处理全部 prompt 和已生成内容，长 prompt 让每一步都更慢">
+  <text class="sm" x="20" y="24">第 1 步</text>
+  <rect class="fill-b" x="80" y="12" width="400" height="18" rx="3"/><rect class="fill-a" x="482" y="12" width="14" height="18" rx="3"/>
+  <text class="sm" x="20" y="54">第 2 步</text>
+  <rect class="fill-b" x="80" y="42" width="400" height="18" rx="3"/><rect class="fill-g" x="482" y="42" width="14" height="18" rx="3"/><rect class="fill-a" x="498" y="42" width="14" height="18" rx="3"/>
+  <text class="sm" x="20" y="84">第 3 步</text>
+  <rect class="fill-b" x="80" y="72" width="400" height="18" rx="3"/><rect class="fill-g" x="482" y="72" width="30" height="18" rx="3"/><rect class="fill-a" x="514" y="72" width="14" height="18" rx="3"/>
+  <text class="sm" x="20" y="114">…</text>
+  <rect class="fill-b" x="80" y="130" width="16" height="14" rx="2"/><text class="sm" x="102" y="142">你的 prompt（每一步都要重新看一遍）</text>
+  <rect class="fill-g" x="360" y="130" width="16" height="14" rx="2"/><text class="sm" x="382" y="142">已生成的 token</text>
+  <rect class="fill-a" x="500" y="130" width="16" height="14" rx="2"/><text class="sm" x="522" y="142">正在生成的 token</text>
+  <text class="sm" x="80" y="164">蓝条越长 → 每一步越慢。所以：精简 prompt，也限制回答长度。</text>
+</svg>
+<figcaption>图 4-11　缩短 prompt 和限制输出长度，都能同时降本提速</figcaption>
+</figure>
+
+<p>解决办法是只提供最相关的片段 —— 这正是第 8 章 <strong>RAG</strong> 要做的事。</p>
+
+<h2 id="choose">怎么选模型</h2>
+
+<p>新模型层出不穷。选择时按下面几个维度过一遍：</p>
+
+<div class="tw"><table>
+  <tr><th>因素</th><th>要问的问题</th></tr>
+  <tr><td><strong>用例</strong></td><td>问答、摘要、分类、写代码、创意写作？先搞清楚要找哪方面强的模型</td></tr>
+  <tr><td><strong>托管方式</strong></td><td>托管 API（OpenAI、Anthropic）接入快、按量付费；自托管（Llama、Mistral、Gemma）控制力强，但要自己管基础设施</td></tr>
+  <tr><td><strong>上下文窗口</strong></td><td>你的 prompt 大概多少 token？窗口够不够</td></tr>
+  <tr><td><strong>能力</strong></td><td>推理、事实准确性、函数调用、结构化输出、多语言……</td></tr>
+  <tr><td><strong>亲手测试</strong></td><td>什么都替代不了<strong>用你的真实任务并排测试</strong>：同一个 prompt 在 2–3 个模型上跑，比速度、准确性、成本</td></tr>
+  <tr><td><strong>性能/成本</strong></td><td>大模型强但贵，GPT-5 mini、Claude Haiku 4.5 这类小模型也许“够用”，成本只是零头</td></tr>
+  <tr><td><strong>许可证</strong></td><td>开放权重尤其要看。例：Llama 3.2 允许商用但有限制 —— 月活超 7 亿需特殊许可，且禁止在欧盟使用其多模态模型</td></tr>
+  <tr><td><strong>数据隐私</strong></td><td>托管 API 会怎么用你的数据？自托管可以做到数据不出门，但需要加固每一层</td></tr>
+</table></div>
+
+<p>你甚至可以让 LLM 帮你做一张对比表：</p>
+
+<div class="prompt">
+  <div class="h">Prompt · 让模型生成对比表</div>
+  <div class="b">Provide a table comparing GPT-5 Mini, Claude Haiku 4.5, and Llama 3.2. List the model names across the table header and complete the following rows below them:
+- Type (example: proprietary, open weight)
+- Context window
+- Strengths (examples: structured output, reasoning)
+- Ideal use case (examples: agents, coding)
+- Hosting (example: OpenAI Hosted API, self-hosted)
+- License (example: commercial)
+<mark>Provide sources with URLs for your answer.</mark></div>
+</div>
+
+<div class="box warn">
+  <div class="t">&#9888; 一定要核对来源</div>
+  <p>
+    模型天生带偏见 —— 这里我们在让一个 OpenAI 模型评价它的竞争对手。它也许完全公正，但请自己去验证。
+    这就是 prompt 最后要求“附上来源链接”的原因。网上也有各种模型排行榜（leaderboard）可以参考。
+  </p>
+</div>
+
+<h2 id="summary">小结</h2>
+
+<ul>
+  <li>规则明确的问题写代码；需要语言理解的问题试 LLM。和真实基线比，而不是和完美比。</li>
+  <li><strong>提示工程是提升准确性和可靠性的第一杠杆</strong>：详细、清晰、简洁。</li>
+  <li>Prompt 五大要素：<strong>指令 / 上下文 / 示例 / 查询 / 输出格式</strong>。</li>
+  <li>你发的每个字都会变成 token，<strong>既花时间也花钱</strong>。</li>
+  <li>大 prompt 会稀释相关性（中间迷失）并拖慢生成，所以要只提供最相关的片段（第 8 章 RAG）。</li>
+  <li>选模型是一场平衡：用例、托管、窗口、能力、成本、许可、隐私，最后<strong>用真实任务测</strong>。</li>
+</ul>
+
+<div class="exercise">
+  <h3>动手练习</h3>
+  <ol>
+    <li>打开第 2/3 章的聊天页面，输入 “Tell me about the Beatles”。再开一个窗口输入同样的 prompt，对比两次回答。一样吗？为什么？（第 6 章会揭晓配置参数的作用。）</li>
+    <li>情感分析的回答里总带着 “Sentiment:”。试着改写 prompt，让 Llama <strong>只</strong>回答 positive、negative 或 neutral 其中一个词。</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>
