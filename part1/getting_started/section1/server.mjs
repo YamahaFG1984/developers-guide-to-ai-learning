@@ -1,13 +1,12 @@
-import express from "express";
+import { Hono } from "hono";
+import { serve } from "@hono/node-server";
 import { Ollama } from "ollama";
 
-const app = express();
+const app = new Hono();
 
 const ollama = new Ollama();
 
-app.get('/', async (request, response) => {
-  response.type('text/plain');
-
+app.get('/', async (c) => {
   const modelResponse = await ollama.generate({
     model: 'llama3.2',
     prompt: "Can you simply say 'test'?"
@@ -16,9 +15,9 @@ app.get('/', async (request, response) => {
   console.log("\nAIMessage object response:\n")
   console.log(modelResponse);
 
-  response.send(modelResponse.response);
+  return c.text(modelResponse.response);
 });
 
-app.listen(8000, () => {
-  console.log(`Server is running on port 8000`);
+serve({ fetch: app.fetch, port: 8000 }, (info) => {
+  console.log(`Server is running on port ${info.port}`);
 });

@@ -110,17 +110,20 @@ node -v
 
 ## 2.2 Section 1：调用 LLM（非流式）
 
+> 📌 **本仓库用 Hono 替代了原书的 Express。** 原书第 2 章用 Express 5；这里的示例已改写为 [Hono](https://hono.dev)。它直接使用 Web 标准的 `Request` / `Response`，同一份代码能跑在 Node.js、Bun、Deno、Cloudflare Workers 上，CORS 和流式响应都是内置的。概念与原书完全一致，文末有 Express ↔ Hono 对照表。
+
 ### 初始化项目
 
 ```bash
 mkdir ai-for-devs && cd ai-for-devs
 npm init -y
-npm install express@5.1.0 ollama@0.6.2
+npm install hono@4 @hono/node-server@2 ollama@0.6.2
 ```
 
-**两个库的作用：**
+**三个库的作用：**
 
-- `express` — 快速搭建服务器
+- `hono` — 轻量 Web 框架，负责路由、请求和响应
+- `@hono/node-server` — 让 Hono 应用跑在 Node.js 上的适配器
 - `ollama`（ollama-js）— 集成 Ollama 最简单的方式
 
 > `package.json` 的 `dependencies` 就像菜谱里的原料清单——只要有菜谱，随时能买齐原料。所以分享项目（比如通过 Git）时**不需要带上 `node_modules`**。
@@ -130,17 +133,16 @@ npm install express@5.1.0 ollama@0.6.2
 **文件：`part1/getting_started/section1/server.mjs`**
 
 ```javascript
-import express from "express";               // ❶
+import { Hono } from "hono";                  // ❶
+import { serve } from "@hono/node-server";
 import { Ollama } from "ollama";
 
-const app = express();                        // ❷
+const app = new Hono();                       // ❷
 
 const ollama = new Ollama();                  // ❸
 
-app.get('/', async (request, response) => {   // ❹
-  response.type('text/plain');                // ❺
-
-  const modelResponse = await ollama.generate({  // ❻
+app.get('/', async (c) => {                   // ❹
+  const modelResponse = await ollama.generate({  // ❺
     model: 'llama3.2',
     prompt: "Can you simply say 'test'?"
   });
@@ -148,41 +150,42 @@ app.get('/', async (request, response) => {   // ❹
   console.log("\nAIMessage object response:\n")
   console.log(modelResponse);                 // 打印完整响应对象，看看里面有什么
 
-  response.send(modelResponse.response);
+  return c.text(modelResponse.response);      // ❻
 });
 
-app.listen(8000, () => {                      // ❼
-  console.log(`Server is running on port 8000`);
+serve({ fetch: app.fetch, port: 8000 }, (info) => {   // ❼
+  console.log(`Server is running on port ${info.port}`);
 });
 ```
 
 **逐点解析：**
 
-❶ 导入两个类：
-- `express` — express 模块导出的顶层函数，本质是 Express 应用实例的构造器，提供路由管理、请求/响应处理、中间件能力
+❶ 导入三样东西：
+- `Hono` — Hono 应用类，提供路由管理、请求/响应处理、中间件能力
+- `serve` — `@hono/node-server` 提供的函数，把 Hono 应用挂到 Node.js 的 HTTP 服务上
 - `Ollama` — ollama-js 的类，负责与 Ollama API 交互
 
-❷ 用 `express()` 初始化应用，赋给 `app`。
+❷ 用 `new Hono()` 创建应用，赋给 `app`。
 
 ❸ 创建 `Ollama` 实例。
 
-❹ `app.get` 配置**路由处理函数**：根 URL (`/`) 收到任何 GET 请求时调用。处理函数接收两个参数：
-- `request` — 代表客户端发来的 HTTP 请求（头、参数、body 等）
-- `response` — 代表服务器将返回的 HTTP 响应（发送数据、设置头等方法）
+❹ `app.get` 配置**路由处理函数**：根 URL (`/`) 收到任何 GET 请求时调用。处理函数只接收一个参数 `c`——**上下文（Context）**：
+- `c.req` — 代表客户端发来的 HTTP 请求（头、参数、body 等）
+- `c.text()` / `c.json()` / `c.html()` 等 — 构造要返回的 HTTP 响应
 
-❺ 告诉客户端将返回纯文本。`response.type` 是设置 `Content-Type: text/plain` 的便捷方法。
+❺ 调用 `generate` 方法，传入模型名和 prompt。这是**异步**方法，所以 `await`。
+
+❻ `c.text()` 返回纯文本响应，并自动设置 `Content-Type: text/plain`。**在 Hono 里处理函数要 `return` 一个响应**，而不是调用 `send`。
 
 > **为什么 Content-Type 重要？** 它标明数据的媒体类型（MIME type），客户端和服务器才能正确处理。这里告诉浏览器"别当 HTML 解析"，优化渲染。
 
-❻ 调用 `generate` 方法，传入模型名和 prompt。这是**异步**方法，所以 `await`。完整响应生成后用 `response.send` 返回。
-
-❼ 监听 8000 端口。
+❼ `app.fetch` 就是整个 Hono 应用——一个"传进 Request、返回 Response"的函数。`serve` 把它接到 Node.js 上并监听 8000 端口。换成 Bun、Deno 或 Workers 时，只需换掉这一段启动代码。
 
 ### 底层发生了什么
 
 ```
 你的 REST 服务      Ollama            Ollama            Llama 3.2
- (Node)          (ollama-js)      (本地服务器)        (本地 LLM)
+ (Hono/Node)     (ollama-js)      (本地服务器)        (本地 LLM)
     │
 HTTP GET /
     │──generate()──→│
@@ -193,7 +196,7 @@ HTTP GET /
     │               │                            │←─response─│
     │               │←──── JSON response ────────│
     │←GenerateResponse│
- response
+ c.text(...)
 ```
 
 ### 运行测试
@@ -236,30 +239,31 @@ const streamIterator = await ollama.generate({
 });
 ```
 
-### Express 侧：流式写回
+### Hono 侧：流式写回
 
-Express 的 `Response` 对象提供 `write` 方法，可以边生成边发送：
+Hono 内置了 `hono/streaming` 模块，`streamText` 帮你返回一个可以边生成边发送的纯文本响应：
 
 ```javascript
-app.post('/', async (request, response) => {
-  response.type('text/plain');
+import { streamText } from "hono/streaming";
 
+app.post('/', async (c) => {
   const streamIterator = await ollama.generate({   // ❶ 返回迭代器
     model: 'llama3.2',
     prompt: "...",
     stream: true
   });
 
-  for await (const chunk of streamIterator) {      // ❷ 每生成一个 chunk 就执行一次循环体
-    response.write(chunk.response);                // ❸ 立刻写回客户端
-  }
-
-  response.end();
+  return streamText(c, async (stream) => {
+    for await (const chunk of streamIterator) {    // ❷ 每生成一个 chunk 就执行一次循环体
+      await stream.write(chunk.response);          // ❸ 立刻写回客户端
+    }
+  });                                              // ❹ 回调结束，响应自动关闭
 });
 ```
 
 ❷ `for await` 让循环逻辑在 LLM 每生成一个 chunk 时运行一次。
-❸ `response.write` 把每个 chunk 的文本立刻发回客户端，直到完整响应结束。
+❸ `stream.write` 把每个 chunk 的文本立刻发回客户端。
+❹ `streamText` 自动设置 `Content-Type: text/plain` 和分块传输（`Transfer-Encoding: chunked`），回调函数结束时响应随之结束，不需要手动 `end()`。
 
 注意这里改成了 **POST**——这样客户端可以在 body 里发送任意问题。
 
@@ -267,9 +271,7 @@ app.post('/', async (request, response) => {
 
 浏览器客户端调用你的服务器时会遇到 **CORS（跨域资源共享）**。这是浏览器实现的安全标准，通过特殊 header 防止恶意行为。它会让请求莫名其妙地失败，即使你的代码看起来完全正确。
 
-```bash
-npm install cors@2.8.5
-```
+Hono 自带 `cors` 中间件（`hono/cors`），**不需要另装包**。
 
 > ⚠️ **警告**：本书所有示例都使用**宽松的 CORS 配置**以便客户端调用，这是为了简化。**上生产前务必正确配置 CORS。**
 
@@ -278,21 +280,20 @@ npm install cors@2.8.5
 **文件：`part1/getting_started/section2/server.mjs`**
 
 ```javascript
-import express from "express";
+import { Hono } from "hono";
+import { cors } from "hono/cors";
+import { streamText } from "hono/streaming";
+import { serve } from "@hono/node-server";
 import { Ollama } from "ollama";
-import cors from "cors";
 
-const app = express();
+const app = new Hono();
 
 app.use(cors());                    // ❶ CORS 中间件
-app.use(express.json());            // ❶ JSON 解析中间件
 
 const ollama = new Ollama();
 
-app.post('/', async (request, response) => {
-  response.type('text/plain');
-
-  const body = request.body;        // ❷ 已被 express.json 解析
+app.post('/', async (c) => {
+  const body = await c.req.json();  // ❷ 读取并解析 JSON 请求体
 
   const streamIterator = await ollama.generate({
     model: 'llama3.2',
@@ -300,21 +301,21 @@ app.post('/', async (request, response) => {
     stream: true
   });
 
-  for await (const chunk of streamIterator) {
-    response.write(chunk.response);
-  }
-
-  response.end();
+  return streamText(c, async (stream) => {
+    for await (const chunk of streamIterator) {
+      await stream.write(chunk.response);
+    }
+  });
 });
 
-app.listen(8000, () => {
-  console.log(`Server is running on port 8000`);
+serve({ fetch: app.fetch, port: 8000 }, (info) => {
+  console.log(`Server is running on port ${info.port}`);
 });
 ```
 
-❶ **Express 中间件**提供了一种简单方式，在你的代码执行前后对请求和响应做修改。
-- `cors()` 自动添加处理 CORS 所需的请求/响应 header
-- `express.json()` 自动解析进来的 JSON，结果放在 `request.body`
+❶ **Hono 中间件**像洋葱一样包在处理函数外面，能在请求进来之前、响应出去之后做修改。`cors()` 会直接回复浏览器的预检（OPTIONS）请求，并给响应加上 `Access-Control-Allow-*` 头。
+
+❷ Hono 不需要单独的 JSON 解析中间件：在处理函数里 `await c.req.json()` 就能拿到解析好的对象。
 
 ❷❸ 客户端发来：
 
@@ -429,10 +430,23 @@ npm run dev
 | --- | --- |
 | 调用 LLM | `ollama.generate({ model, prompt })` |
 | 开启流式 | 加 `stream: true`，返回值变成异步迭代器 |
-| 服务端流式写回 | `response.write(chunk)` + `response.end()` |
+| 服务端流式写回 | `return streamText(c, async (stream) => { await stream.write(chunk) })` |
 | 客户端读流 | `response.body.pipeThrough(new TextDecoderStream()).getReader()` |
-| 跨域 | `app.use(cors())` |
-| 解析 JSON body | `app.use(express.json())` |
+| 跨域 | `app.use(cors())`（`hono/cors` 内置） |
+| 解析 JSON body | `await c.req.json()` |
+
+**对照原书：Express ↔ Hono**
+
+| 做什么 | 原书 Express | 本仓库 Hono |
+| --- | --- | --- |
+| 安装 | `npm install express cors` | `npm install hono @hono/node-server` |
+| 创建应用 | `const app = express()` | `const app = new Hono()` |
+| 处理函数 | `(request, response) => { … }` | `(c) => { … return 响应 }` |
+| 返回纯文本 | `response.type('text/plain')` + `response.send(x)` | `return c.text(x)` |
+| 读 JSON 请求体 | `app.use(express.json())` 后读 `request.body` | `await c.req.json()` |
+| 跨域 | 另装 `cors` 包，`app.use(cors())` | 内置 `hono/cors`，`app.use(cors())` |
+| 流式写回 | `response.write(chunk)` … `response.end()` | `streamText(c, async (stream) => { await stream.write(chunk) })` |
+| 启动 | `app.listen(8000)` | `serve({ fetch: app.fetch, port: 8000 })` |
 
 ---
 

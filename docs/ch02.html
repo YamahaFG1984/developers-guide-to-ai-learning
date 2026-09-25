@@ -22,9 +22,9 @@
   <h4>本章目标</h4>
   <ul>
     <li>用 Ollama 在本地运行 Llama 3.2</li>
-    <li>用 Express 写一个服务，把 prompt 发给 LLM 并返回回答</li>
+    <li>用 <strong>Hono</strong> 写一个服务，把 prompt 发给 LLM 并返回回答</li>
     <li>理解<strong>流式响应（streaming）</strong>：为什么需要、服务端怎么写、前端怎么读</li>
-    <li>认识 CORS 和 Express 中间件</li>
+    <li>认识 CORS 和 Hono 中间件</li>
   </ul>
 </div>
 
@@ -54,7 +54,7 @@
   <rect class="bx" x="90" y="40" width="200" height="50" rx="10"/>
   <text class="ttl" x="190" y="70" text-anchor="middle">ChatGPT 网页</text>
   <rect class="bx-a" x="470" y="40" width="200" height="50" rx="10"/>
-  <text class="ttl on-a" x="570" y="62" text-anchor="middle">React 前端 + Express 服务</text>
+  <text class="ttl on-a" x="570" y="62" text-anchor="middle">React 前端 + Hono 服务</text>
   <text class="sm" x="570" y="80" text-anchor="middle">你写的代码</text>
 
   <path class="ln" d="M190 92 V120" marker-end="url(#ar)"/>
@@ -184,16 +184,27 @@ The Beatles were a British rock band that formed in Liverpool, England in 1960..
 
 <h2 id="call">第一步：调用 LLM（非流式）</h2>
 
+<div class="box note">
+  <div class="t">&#9432; 本教程用 Hono 替代了书中的 Express</div>
+  <p>
+    原书第 2 章用的是 Express。本仓库的示例已改写为 <a href="https://hono.dev">Hono</a>：
+    它直接使用浏览器里就有的 Web 标准对象（<code>Request</code>、<code>Response</code>），同一份代码能跑在 Node.js、Bun、Deno、Cloudflare Workers 上，
+    CORS、流式响应等常用功能都是内置的，不必另装包。概念和书中完全一致，只是写法更现代。
+    本章末尾有一张 Express ↔ Hono 对照表，方便你对照原书阅读。
+  </p>
+</div>
+
 <div class="code" data-lang="bash">
 <pre>
 mkdir ai-for-devs &amp;&amp; cd ai-for-devs
 npm init -y
-npm install express@5.1.0 ollama@0.6.2
+npm install hono@4 @hono/node-server@2 ollama@0.6.2
 </pre>
 </div>
 
 <ul>
-  <li><code>express</code>：用几行代码搭一个 Web 服务器</li>
+  <li><code>hono</code>：轻量的 Web 框架，负责路由、请求和响应</li>
+  <li><code>@hono/node-server</code>：让 Hono 应用跑在 Node.js 上的适配器</li>
   <li><code>ollama</code>（ollama-js）：官方 JS 库，帮你调用 Ollama API</li>
 </ul>
 
@@ -207,44 +218,59 @@ npm install express@5.1.0 ollama@0.6.2
 
 <div class="code" data-lang="js" data-file="part1/getting_started/section1/server.mjs">
 <pre>
-import express from "express";               // ❶ 导入 Express
+import { Hono } from "hono";                 // ❶ 导入 Hono
+import { serve } from "@hono/node-server";   //   Node.js 适配器
 import { Ollama } from "ollama";             //   和 Ollama 客户端
 
-const app = express();                       // ❷ 创建应用
+const app = new Hono();                      // ❷ 创建应用
 const ollama = new Ollama();                 // ❸ 创建 Ollama 客户端
 
-app.get('/', async (request, response) =&gt; {  // ❹ 访问根路径时执行
-  response.type('text/plain');               // ❺ 告诉浏览器：返回的是纯文本
-
-  const modelResponse = await ollama.generate({  // ❻ 把 prompt 发给模型，等它答完
+app.get('/', async (c) =&gt; {                  // ❹ 访问根路径时执行，c 是上下文
+  const modelResponse = await ollama.generate({  // ❺ 把 prompt 发给模型，等它答完
     model: 'llama3.2',
     prompt: "Can you simply say 'test'?"
   });
 
   console.log(modelResponse);                // 打印完整响应对象，看看里面有什么
-  response.send(modelResponse.response);     // 只把回答文本发给浏览器
+  return c.text(modelResponse.response);     // ❻ 以纯文本返回回答
 });
 
-app.listen(8000, () =&gt; {                     // ❼ 监听 8000 端口
-  console.log(`Server is running on port 8000`);
+serve({ fetch: app.fetch, port: 8000 }, (info) =&gt; {   // ❼ 在 8000 端口启动
+  console.log(`Server is running on port ${info.port}`);
 });
 </pre>
 </div>
 
 <ol class="steps">
-  <li><strong>导入两个工具</strong><code>express</code> 负责路由和请求/响应；<code>Ollama</code> 负责和 Ollama API 对话。</li>
-  <li><strong>创建应用和客户端</strong><code>express()</code> 得到服务器，<code>new Ollama()</code> 得到默认连接 <code>localhost:11434</code> 的客户端。</li>
-  <li><strong>注册路由</strong><code>app.get('/', …)</code>：有人 GET 根路径时执行处理函数。<code>request</code> 是收到的请求，<code>response</code> 是要发回的响应。</li>
-  <li><strong>设置 Content-Type</strong><code>text/plain</code> 告诉浏览器“别当 HTML 解析”。</li>
+  <li><strong>导入工具</strong><code>Hono</code> 负责路由和请求/响应；<code>serve</code> 把它挂到 Node.js 的 HTTP 服务上；<code>Ollama</code> 负责和 Ollama API 对话。</li>
+  <li><strong>创建应用和客户端</strong><code>new Hono()</code> 得到应用，<code>new Ollama()</code> 得到默认连接 <code>localhost:11434</code> 的客户端。</li>
+  <li><strong>注册路由</strong><code>app.get('/', …)</code>：有人 GET 根路径时执行处理函数。参数 <code>c</code> 是<strong>上下文（Context）</strong>：用 <code>c.req</code> 读请求，用 <code>c.text()</code>、<code>c.json()</code> 等造响应。</li>
   <li><strong>调用模型</strong><code>generate</code> 是异步方法，<code>await</code> 会一直等到模型<strong>完整</strong>生成回答。</li>
+  <li><strong>返回纯文本</strong><code>c.text()</code> 自动设置 <code>Content-Type: text/plain</code>，告诉浏览器“别当 HTML 解析”。在 Hono 里，处理函数<strong>返回</strong>一个响应，而不是调用 <code>send</code>。</li>
 </ol>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 184" role="img" aria-label="Hono 应用本质上是一个把 Request 变成 Response 的函数，serve 负责把它接到 Node.js 的 HTTP 服务上">
+  <rect class="bx-b" x="20" y="60" width="130" height="50" rx="10"/><text class="mono on-b" x="85" y="90" text-anchor="middle">Request</text>
+  <path class="ln-b" d="M152 85 H206" marker-end="url(#ar-b)"/>
+  <rect class="bx-a" x="208" y="40" width="340" height="90" rx="12"/>
+  <text class="ttl on-a" x="378" y="66" text-anchor="middle">Hono 应用 app.fetch</text>
+  <text class="mono" x="378" y="90" text-anchor="middle">(request) =&gt; Response</text>
+  <text class="sm" x="378" y="114" text-anchor="middle">路由 → 中间件 → 你的处理函数 (c) =&gt; c.text(…)</text>
+  <path class="ln-g" d="M550 85 H604" marker-end="url(#ar-g)"/>
+  <rect class="bx-g" x="606" y="60" width="134" height="50" rx="10"/><text class="mono on-g" x="673" y="90" text-anchor="middle">Response</text>
+  <rect class="bx-d" x="178" y="146" width="400" height="28" rx="6"/>
+  <text class="sm" x="378" y="165" text-anchor="middle">serve()：把它接到 Node.js 上；换成 Bun / Deno / Workers 代码几乎不用改</text>
+</svg>
+<figcaption>图 2-3a　Hono 应用就是一个“传进 Request、返回 Response”的函数，用的都是 Web 标准对象</figcaption>
+</figure>
 
 <h3>一次请求在底层走了几步？</h3>
 
 <figure>
-<svg class="dgm" viewBox="0 0 760 330" role="img" aria-label="时序图：浏览器请求 Express，Express 通过 ollama-js 调用 Ollama 服务，服务把 prompt 交给 Llama 3.2，结果原路返回">
+<svg class="dgm" viewBox="0 0 760 330" role="img" aria-label="时序图：浏览器请求 Hono 服务，Hono 通过 ollama-js 调用 Ollama 服务，服务把 prompt 交给 Llama 3.2，结果原路返回">
   <rect class="bx" x="20" y="16" width="130" height="44" rx="8"/><text class="ttl" x="85" y="43" text-anchor="middle">浏览器</text>
-  <rect class="bx-a" x="210" y="16" width="130" height="44" rx="8"/><text class="ttl on-a" x="275" y="36" text-anchor="middle">Express</text><text class="sm" x="275" y="52" text-anchor="middle">server.mjs</text>
+  <rect class="bx-a" x="210" y="16" width="130" height="44" rx="8"/><text class="ttl on-a" x="275" y="36" text-anchor="middle">Hono</text><text class="sm" x="275" y="52" text-anchor="middle">server.mjs</text>
   <rect class="bx-b" x="400" y="16" width="130" height="44" rx="8"/><text class="ttl on-b" x="465" y="36" text-anchor="middle">Ollama 服务</text><text class="sm" x="465" y="52" text-anchor="middle">:11434</text>
   <rect class="bx-p" x="590" y="16" width="150" height="44" rx="8"/><text class="ttl on-p" x="665" y="43" text-anchor="middle">Llama 3.2</text>
 
@@ -258,7 +284,7 @@ app.listen(8000, () =&gt; {                     // ❼ 监听 8000 端口
   <path class="ln-b" d="M465 268 H279" marker-end="url(#ar-b)"/><text class="sm" x="370" y="262" text-anchor="middle">JSON（GenerateResponse）</text>
   <path class="ln-a" d="M275 304 H89" marker-end="url(#ar-a)"/><text class="mono" x="180" y="298" text-anchor="middle">"Test."</text>
 </svg>
-<figcaption>图 2-3　非流式调用：Express 要等模型把<strong>整段</strong>回答生成完，才能一次性返回</figcaption>
+<figcaption>图 2-3　非流式调用：服务要等模型把<strong>整段</strong>回答生成完，才能一次性返回</figcaption>
 </figure>
 
 <div class="code" data-lang="bash">
@@ -333,16 +359,21 @@ const streamIterator = await ollama.generate({
 </pre>
 </div>
 
-<p>第二处，用 <code>for await</code> 逐块读取，每读到一块就用 <code>response.write</code> 立刻发给客户端，最后 <code>response.end()</code> 收尾：</p>
+<p>第二处，用 Hono 内置的 <code>streamText</code> 返回一个流式响应。在回调里用 <code>for await</code> 逐块读取模型输出，每读到一块就 <code>stream.write</code> 立刻发给客户端；回调结束，响应自动关闭：</p>
 
 <div class="code" data-lang="js">
 <pre>
-for await (const chunk of streamIterator) {   // 模型每生成一块，循环体执行一次
-  response.write(chunk.response);             // 马上写回客户端
-}
-response.end();                               // 全部结束，关闭响应
+import { streamText } from "hono/streaming";
+
+return streamText(c, async (stream) =&gt; {
+  for await (const chunk of streamIterator) {   // 模型每生成一块，循环体执行一次
+    await stream.write(chunk.response);         // 马上写回客户端
+  }
+});                                             // 回调结束 = 响应结束
 </pre>
 </div>
+
+<p><code>streamText</code> 会自动设置 <code>Content-Type: text/plain</code> 和分块传输（<code>Transfer-Encoding: chunked</code>），你只管往里写。</p>
 
 <h3>CORS 与中间件</h3>
 
@@ -366,7 +397,7 @@ response.end();                               // 全部结束，关闭响应
   <text class="sm" x="370" y="168" text-anchor="middle">没有这个头 → 浏览器直接拦截，报 CORS 错误</text>
 
   <rect class="bx-b" x="520" y="40" width="220" height="120" rx="12"/>
-  <text class="ttl on-b" x="630" y="66" text-anchor="middle">Express 服务</text>
+  <text class="ttl on-b" x="630" y="66" text-anchor="middle">Hono 服务</text>
   <text class="mono" x="630" y="88" text-anchor="middle">localhost:8000</text>
   <text class="sm" x="630" y="118" text-anchor="middle">app.use(cors())</text>
   <text class="sm" x="630" y="136" text-anchor="middle">自动加上允许跨域的头</text>
@@ -375,27 +406,25 @@ response.end();                               // 全部结束，关闭响应
 </figure>
 
 <p>
-  解决办法是用 Express 的<strong>中间件（middleware）</strong>。中间件是在你的处理函数<strong>之前</strong>运行的函数，
-  可以对请求和响应做加工。我们需要两个：
+  解决办法是用 Hono 的<strong>中间件（middleware）</strong>。中间件是包在处理函数外面的函数，
+  可以在请求到达你的代码<strong>之前</strong>、响应发出<strong>之后</strong>做加工。Hono 自带了 <code>cors()</code> 中间件，一行就能开启跨域：
 </p>
 
 <figure>
-<svg class="dgm" viewBox="0 0 760 130" role="img" aria-label="请求依次经过 cors 中间件、express.json 中间件，最后到达路由处理函数">
-  <rect class="bx" x="20" y="40" width="110" height="50" rx="8"/><text class="lbl" x="75" y="70" text-anchor="middle">HTTP 请求</text>
-  <path class="ln" d="M132 65 H176" marker-end="url(#ar)"/>
-  <rect class="bx-b" x="178" y="30" width="160" height="70" rx="10"/>
-  <text class="mono on-b" x="258" y="58" text-anchor="middle">cors()</text>
-  <text class="sm" x="258" y="80" text-anchor="middle">加跨域响应头</text>
-  <path class="ln" d="M340 65 H384" marker-end="url(#ar)"/>
-  <rect class="bx-b" x="386" y="30" width="160" height="70" rx="10"/>
-  <text class="mono on-b" x="466" y="58" text-anchor="middle">express.json()</text>
-  <text class="sm" x="466" y="80" text-anchor="middle">JSON → request.body</text>
-  <path class="ln" d="M548 65 H592" marker-end="url(#ar)"/>
-  <rect class="bx-a" x="594" y="30" width="146" height="70" rx="10"/>
-  <text class="ttl on-a" x="667" y="58" text-anchor="middle">你的处理函数</text>
-  <text class="mono" x="667" y="80" text-anchor="middle">app.post('/')</text>
+<svg class="dgm" viewBox="0 0 760 220" role="img" aria-label="洋葱模型：请求先经过 cors 中间件再到处理函数，响应从处理函数出来再经过 cors 中间件加上跨域响应头">
+  <rect class="bx-b" x="170" y="20" width="420" height="180" rx="16"/>
+  <text class="mono on-b" x="190" y="46">cors()</text>
+  <text class="sm" x="190" y="66">预检请求直接回复；其他请求放行</text>
+  <rect class="bx-a" x="260" y="84" width="240" height="96" rx="12"/>
+  <text class="ttl on-a" x="380" y="110" text-anchor="middle">你的处理函数</text>
+  <text class="mono" x="380" y="134" text-anchor="middle">app.post('/', …)</text>
+  <text class="mono" x="380" y="156" text-anchor="middle">await c.req.json()</text>
+  <path class="ln" d="M20 110 H256" marker-end="url(#ar)"/><text class="lbl" x="40" y="102">请求 →</text>
+  <path class="ln-g" d="M504 150 H740" marker-end="url(#ar-g)"/><text class="lbl on-g" x="610" y="142">→ 响应</text>
+  <text class="sm on-g" x="604" y="172">cors() 在这里加上</text>
+  <text class="sm on-g" x="604" y="188">Access-Control-* 头</text>
 </svg>
-<figcaption>图 2-6　中间件就像流水线上的工位，请求依次经过它们，最后才到你的代码</figcaption>
+<figcaption>图 2-6　Hono 的中间件像洋葱：请求由外向内，响应由内向外，中间件两头都能插一手</figcaption>
 </figure>
 
 <div class="box warn">
@@ -405,29 +434,24 @@ response.end();                               // 全部结束，关闭响应
 
 <h3>完整的流式服务</h3>
 
-<div class="code" data-lang="bash">
-<pre>
-npm install cors@2.8.5
-</pre>
-</div>
+<p>JSON 请求体不需要额外的解析中间件：在处理函数里 <code>await c.req.json()</code> 就能拿到对象。所以这一步<strong>不用再装任何包</strong>。</p>
 
 <div class="code" data-lang="js" data-file="part1/getting_started/section2/server.mjs">
 <pre>
-import express from "express";
+import { Hono } from "hono";
+import { cors } from "hono/cors";
+import { streamText } from "hono/streaming";
+import { serve } from "@hono/node-server";
 import { Ollama } from "ollama";
-import cors from "cors";
 
-const app = express();
+const app = new Hono();
 
 app.use(cors());                    // ❶ 中间件：处理跨域
-app.use(express.json());            // ❶ 中间件：解析 JSON 请求体
 
 const ollama = new Ollama();
 
-app.post('/', async (request, response) =&gt; {   // 改成 POST，才能在 body 里带问题
-  response.type('text/plain');
-
-  const body = request.body;        // ❷ 已被 express.json() 解析好
+app.post('/', async (c) =&gt; {        // 改成 POST，才能在 body 里带问题
+  const body = await c.req.json();  // ❷ 读取并解析 JSON 请求体
 
   const streamIterator = await ollama.generate({
     model: 'llama3.2',
@@ -435,15 +459,15 @@ app.post('/', async (request, response) =&gt; {   // 改成 POST，才能在 bod
     stream: true
   });
 
-  for await (const chunk of streamIterator) {
-    response.write(chunk.response);
-  }
-
-  response.end();
+  return streamText(c, async (stream) =&gt; {   // ❹ 流式返回
+    for await (const chunk of streamIterator) {
+      await stream.write(chunk.response);
+    }
+  });
 });
 
-app.listen(8000, () =&gt; {
-  console.log(`Server is running on port 8000`);
+serve({ fetch: app.fetch, port: 8000 }, (info) =&gt; {
+  console.log(`Server is running on port ${info.port}`);
 });
 </pre>
 </div>
@@ -484,7 +508,7 @@ curl -N -X POST -H "Content-Type: application/json" -d \
   <text class="sm" x="287" y="74" text-anchor="middle">异步迭代器</text>
   <path class="ln" d="M374 60 H422" marker-end="url(#ar)"/>
   <rect class="bx-a" x="424" y="32" width="170" height="56" rx="10"/>
-  <text class="mono on-a" x="509" y="56" text-anchor="middle">response.write()</text>
+  <text class="mono on-a" x="509" y="56" text-anchor="middle">stream.write()</text>
   <text class="sm" x="509" y="74" text-anchor="middle">立刻发出这一块</text>
 
   <path class="ln-a" d="M596 60 H690 V150" marker-end="url(#ar-a)"/>
@@ -571,10 +595,24 @@ npm run dev        # 打开终端里提示的地址（通常是 http://localhost
   <tr><th>场景</th><th>API</th></tr>
   <tr><td>调用 LLM</td><td><code>ollama.generate({ model, prompt })</code></td></tr>
   <tr><td>开启流式</td><td>加 <code>stream: true</code>，返回值变成异步迭代器</td></tr>
-  <tr><td>服务端逐块写回</td><td><code>response.write(chunk)</code> + <code>response.end()</code></td></tr>
+  <tr><td>服务端逐块写回</td><td><code>return streamText(c, async (stream) =&gt; { await stream.write(chunk) })</code></td></tr>
   <tr><td>客户端读流</td><td><code>response.body.pipeThrough(new TextDecoderStream()).getReader()</code></td></tr>
-  <tr><td>允许跨域</td><td><code>app.use(cors())</code></td></tr>
-  <tr><td>解析 JSON 请求体</td><td><code>app.use(express.json())</code></td></tr>
+  <tr><td>允许跨域</td><td><code>app.use(cors())</code>（<code>hono/cors</code> 内置）</td></tr>
+  <tr><td>解析 JSON 请求体</td><td><code>await c.req.json()</code></td></tr>
+</table></div>
+
+<h3>对照原书：Express ↔ Hono</h3>
+
+<div class="tw"><table>
+  <tr><th>做什么</th><th>原书 Express</th><th>本仓库 Hono</th></tr>
+  <tr><td>安装</td><td><code>npm install express cors</code></td><td><code>npm install hono @hono/node-server</code></td></tr>
+  <tr><td>创建应用</td><td><code>const app = express()</code></td><td><code>const app = new Hono()</code></td></tr>
+  <tr><td>处理函数</td><td><code>(request, response) =&gt; { … }</code></td><td><code>(c) =&gt; { … return 响应 }</code></td></tr>
+  <tr><td>返回纯文本</td><td><code>response.type('text/plain')</code> + <code>response.send(x)</code></td><td><code>return c.text(x)</code></td></tr>
+  <tr><td>读 JSON 请求体</td><td><code>app.use(express.json())</code> 后读 <code>request.body</code></td><td><code>await c.req.json()</code></td></tr>
+  <tr><td>跨域</td><td>另装 <code>cors</code> 包，<code>app.use(cors())</code></td><td>内置 <code>hono/cors</code>，<code>app.use(cors())</code></td></tr>
+  <tr><td>流式写回</td><td><code>response.write(chunk)</code> … <code>response.end()</code></td><td><code>streamText(c, async (stream) =&gt; { await stream.write(chunk) })</code></td></tr>
+  <tr><td>启动</td><td><code>app.listen(8000)</code></td><td><code>serve({ fetch: app.fetch, port: 8000 })</code></td></tr>
 </table></div>
 
 <div class="exercise">

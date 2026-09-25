@@ -1,18 +1,17 @@
-import express from "express";
+import { Hono } from "hono";
+import { cors } from "hono/cors";
+import { streamText } from "hono/streaming";
+import { serve } from "@hono/node-server";
 import { Ollama } from "ollama";
-import cors from 'cors';
 
-const app = express();
+const app = new Hono();
 
 app.use(cors());
-app.use(express.json());
 
 const ollama = new Ollama();
 
-app.post('/', async (request, response) => {
-  response.type('text/plain');
-
-  const body = request.body;
+app.post('/', async (c) => {
+  const body = await c.req.json();
 
   const streamIterator = await ollama.generate({
     model: 'llama3.2',
@@ -20,13 +19,13 @@ app.post('/', async (request, response) => {
     stream: true
   });
 
-  for await (const chunk of streamIterator) {
-    response.write(chunk.response);
-  }
-
-  response.end();
+  return streamText(c, async (stream) => {
+    for await (const chunk of streamIterator) {
+      await stream.write(chunk.response);
+    }
+  });
 });
 
-app.listen(8000, () => {
-  console.log(`Server is running on port 8000`);
+serve({ fetch: app.fetch, port: 8000 }, (info) => {
+  console.log(`Server is running on port ${info.port}`);
 });

@@ -6,7 +6,7 @@
 
   var CHAPTERS = [
     { n: 1,  t: '理解大语言模型',       d: 'LLM 怎么训练、怎么预测下一个 token，以及它的四大局限', part: '第一部分 · 起步' },
-    { n: 2,  t: '构建第一个 LLM 应用',  d: 'Ollama + Express + 流式响应 + React 聊天界面' },
+    { n: 2,  t: '构建第一个 LLM 应用',  d: 'Ollama + Hono + 流式响应 + React 聊天界面' },
     { n: 3,  t: 'Python 要点',          d: 'FastAPI、Ollama SDK、Pydantic 与 yield 生成器' },
     { n: 4,  t: '提示工程基础',         d: 'Prompt 五要素、上下文窗口、token 与成本', part: '第二部分 · 提示工程' },
     { n: 5,  t: '提示工程技巧',         d: 'Persona、few-shot、思维链、提示链与分隔符' },

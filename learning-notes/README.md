@@ -40,7 +40,7 @@
 | 章节 | 主题 | 对应代码 |
 | --- | --- | --- |
 | [第 1 章 · 理解大语言模型](./ch01-理解大语言模型.md) | LLM 训练、token 预测、四大局限、四层策略金字塔 | — |
-| [第 2 章 · 构建第一个 LLM 应用](./ch02-构建第一个LLM应用.md) | Ollama + Express + 流式响应 + React 客户端 | `part1/getting_started/`、`part1/client/` |
+| [第 2 章 · 构建第一个 LLM 应用](./ch02-构建第一个LLM应用.md) | Ollama + Hono + 流式响应 + React 客户端 | `part1/getting_started/`、`part1/client/` |
 | [第 3 章 · LLM 与 API 的 Python 要点](./ch03-Python要点.md) | FastAPI + Ollama SDK + Pydantic + `yield` 生成器 | `part1/getting_started_python/` |
 
 ### Part II · 提示工程（Prompt Engineering）

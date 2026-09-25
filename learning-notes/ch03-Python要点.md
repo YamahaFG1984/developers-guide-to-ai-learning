@@ -255,17 +255,17 @@ curl -N -X POST -H "Content-Type: application/json" -d \
 
 | 概念 | JavaScript（第 2 章） | Python（第 3 章） |
 | --- | --- | --- |
-| Web 框架 | Express | FastAPI |
-| 创建应用 | `const app = express()` | `app = FastAPI()` |
+| Web 框架 | Hono | FastAPI |
+| 创建应用 | `const app = new Hono()` | `app = FastAPI()` |
 | CORS | `app.use(cors())` | `app.add_middleware(CORSMiddleware, ...)` |
-| 解析 JSON body | `app.use(express.json())` | Pydantic `BaseModel` 自动完成 |
-| 路由定义 | `app.post('/', handler)` | `@app.post("/")` + `def chat(...)` |
+| 解析 JSON body | `await c.req.json()` | Pydantic `BaseModel` 自动完成 |
+| 路由定义 | `app.post('/', async (c) => …)` | `@app.post("/")` + `def chat(...)` |
 | LLM 客户端 | `new Ollama()` | `Client()` |
 | 调用模型 | `await ollama.generate({...})` | `client.generate(...)` |
 | 流式开关 | `stream: true` | `stream=True` |
 | 遍历流 | `for await (const chunk of iter)` | `for chunk in result` |
-| 写回一块 | `response.write(chunk.response)` | `yield chunk.response` |
-| 流式响应包装 | `response.end()` | `StreamingResponse(gen, media_type=...)` |
+| 写回一块 | `await stream.write(chunk.response)` | `yield chunk.response` |
+| 流式响应包装 | `return streamText(c, async (stream) => …)` | `StreamingResponse(gen, media_type=...)` |
 | 启动 | `node server.mjs` | `fastapi dev main.py` |
 
 ---

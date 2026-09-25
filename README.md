@@ -215,7 +215,7 @@ This part provides the foundation for working with AI, featuring both JavaScript
 | Project | Description |
 | --- | --- |
 | [part1/client/](part1/client/) | A React-based frontend application that consumes the LLM API. It demonstrates how to handle streaming responses from the server and manage UI states, providing a simple interface to ask questions and see the LLM's response in real-time. |
-| [part1/getting_started/](part1/getting_started/) | Contains two Express.js server implementations. `section1` provides a basic REST service that interfaces with a local LLM using the Ollama SDK. `section2` enhances this by implementing real-time streaming of LLM responses, showing how to create a more responsive user experience. |
+| [part1/getting_started/](part1/getting_started/) | Contains two Hono (Node.js) server implementations. `section1` provides a basic REST service that interfaces with a local LLM using the Ollama SDK. `section2` enhances this by implementing real-time streaming of LLM responses, showing how to create a more responsive user experience. |
 | [part1/getting_started_python/](part1/getting_started_python/) | A FastAPI-based Python alternative to the JavaScript server. It showcases Python's asynchronous capabilities for LLM interactions, including streaming support, and demonstrates how to integrate with the same LLM backend using Python's ecosystem. |
 
 ---
